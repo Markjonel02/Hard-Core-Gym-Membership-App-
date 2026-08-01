@@ -31,7 +31,19 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+!.env.example
+
+# Firebase
+functions/node_modules/
+functions/lib/
+.firebase/
+firebase-debug.log
+*-debug.log
+# never commit the Gmail OAuth refresh token / service account keys
+functions/.secret.local
+serviceAccountKey*.json
 
 # typescript
 *.tsbuildinfo

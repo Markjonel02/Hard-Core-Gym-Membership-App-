@@ -1,0 +1,26 @@
+{
+  "name": "hardcore-gym-functions",
+  "description": "Scheduled expiry reminders, Gmail delivery, and sales aggregation for Hardcore Gym",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "test": "npm run build && node scripts/verify-logic.js",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
+    "shell": "npm run build && firebase functions:shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.2",
+    "firebase-functions": "^6.3.0",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

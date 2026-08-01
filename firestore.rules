@@ -1,0 +1,112 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: the custom claim on the Auth token is the authoritative role source.
+    function role() {
+      return request.auth.token.role;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMember() {
+      return isSignedIn() && role() == 'member';
+    }
+
+    function isStaff() {
+      return isSignedIn() && (role() == 'staff' || role() == 'admin');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && role() == 'admin';
+    }
+
+    // The member->uid link lives on the member doc, so proving ownership of a payment or
+    // check-in needs a join. This costs one extra read per evaluated doc, which is fine at
+    // gym scale and is the only way to prove ownership without trusting a client field.
+    function ownsMember(memberId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/members/$(memberId)).data.uid == request.auth.uid;
+    }
+
+    // Users can read their own profile. The role field is writable only by the
+    // admin SDK (Functions), so a client cannot promote itself.
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+                    && (!('role' in request.resource.data) || request.resource.data.role == 'member');
+      allow update: if isSignedIn() && request.auth.uid == uid
+                    && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
+    }
+
+    // Members: a member reads only the doc where uid matches their auth uid.
+    // Staff and admin read and write all members.
+    match /members/{memberId} {
+      allow read: if (isMember() && resource.data.uid == request.auth.uid) || isStaff();
+      allow write: if isStaff();
+    }
+
+    // Plans: staff and admin manage; members read active plans only for the renewal flow.
+    match /plans/{planId} {
+      allow read: if isSignedIn();
+      allow write: if isStaff();
+    }
+
+    // Payments: admin reads all for the sales dashboard; a member reads only the payments
+    // attached to their own member doc (the receipt list on the Membership screen).
+    // Staff create payments from the front desk; nobody edits or deletes one, because the
+    // sales aggregates are derived from these docs and a silent edit would skew the totals.
+    match /payments/{paymentId} {
+      allow read: if isAdmin() || isStaff() || ownsMember(resource.data.memberId);
+      allow create: if isStaff()
+                    && request.resource.data.amountCents is int
+                    && request.resource.data.amountCents >= 0
+                    && request.resource.data.kind in ['new', 'renewal'];
+      allow update, delete: if false;
+    }
+
+    // Check-ins: members read their own; staff create them (QR scanner).
+    match /checkins/{checkinId} {
+      allow read: if isStaff() || ownsMember(resource.data.memberId);
+      allow create: if isStaff();
+      allow update, delete: if false;
+    }
+
+    // Stats: admin-only reads for the dashboard. Only triggers write these.
+    match /stats/daily/entries/{entryId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /stats/monthly/entries/{entryId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Announcements: everyone reads; staff create/edit.
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isStaff();
+    }
+
+    // Notifications: ledger written by Functions. Staff can read (for debugging).
+    match /notifications/{notificationId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    // Rate limit counters, written only by Functions via the admin SDK. Stated explicitly
+    // rather than left to the catch-all below: a limit a client could read would leak how
+    // close it is to tripping, and one a client could write would not be a limit at all.
+    match /rateLimits/{limitId} {
+      allow read, write: if false;
+    }
+
+    // Default deny for anything not explicitly matched above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
