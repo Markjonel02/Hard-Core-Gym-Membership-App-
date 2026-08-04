@@ -34,12 +34,48 @@ service cloud.firestore {
 
     // Users can read their own profile. The role field is writable only by the
     // admin SDK (Functions), so a client cannot promote itself.
+    //
+    // `username` is pinned after creation. The authoritative copy is the `usernames/{name}`
+    // reservation; this field is a convenience mirror for rendering. Letting a client edit it
+    // freely would let a profile advertise a username its owner never reserved.
+    // Staff read all accounts. This is what makes the admin user-management screen and the
+    // team-access email lookup possible: both need to answer "which accounts exist and what
+    // role does each hold?", which no amount of per-doc self-reads can answer. The exposure is
+    // the staff-only profile fields already visible on the members screen, and `role` stays
+    // unwritable from any client — promotion still goes through the admin-gated callable.
     match /users/{uid} {
-      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow read: if (isSignedIn() && request.auth.uid == uid) || isStaff();
       allow create: if isSignedIn() && request.auth.uid == uid
                     && (!('role' in request.resource.data) || request.resource.data.role == 'member');
       allow update: if isSignedIn() && request.auth.uid == uid
-                    && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
+                    && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+                    && (!('username' in request.resource.data)
+                        || !('username' in resource.data)
+                        || request.resource.data.username == resource.data.username);
+    }
+
+    // Username reservations. The doc id is the lowercased username, which is what makes
+    // uniqueness real — `create` on an existing id fails, and update/delete are closed, so a
+    // name cannot be reassigned or released by a client.
+    //
+    // `get` is public by necessity: sign-in has to turn a username into an email *before* the
+    // user has a credential, so an anonymous read is the only way. The trade-off is that the
+    // username -> email mapping is discoverable. It is bounded to that one pair — no name,
+    // phone, membership, or payment data lives here — and knowing an email does not get an
+    // attacker past the password. `list` stays denied so the set cannot be enumerated wholesale.
+    match /usernames/{username} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSignedIn()
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.username == username
+                    && username.size() >= 3
+                    && username.size() <= 20
+                    // Reject anything the client did not lowercase, so `Juan` and `juan` cannot
+                    // both be claimed as separate reservations for the same name.
+                    && username == username.lower()
+                    && request.resource.data.email == request.auth.token.email;
+      allow update, delete: if false;
     }
 
     // Members: a member reads only the doc where uid matches their auth uid.

@@ -4,6 +4,7 @@ import { onSnapshot } from 'firebase/firestore';
 
 import { useCollection } from '@/hooks/useCollection';
 import { q, ref } from '@/lib/firestore';
+import { daysUntil, sortByDateAsc } from '@/lib/format';
 import type { CheckIn, Member, MonthlyStats } from '@/types/models';
 
 const MONTH_ID = 'yyyy-MM';
@@ -12,6 +13,10 @@ const MONTH_ID = 'yyyy-MM';
  * Reads the pre-aggregated stats/monthly counters maintained by the aggregates trigger.
  * Firestore has no GROUP BY, so summing payments client-side would mean downloading every
  * payment doc; the counters keep this dashboard at a handful of reads.
+ *
+ * These counters only exist if the aggregates Cloud Function is deployed and has fired. An
+ * undeployed backend therefore shows a flat zero chart with healthy-looking member tiles —
+ * which is why the dashboard renders `error` separately instead of treating empty as fine.
  */
 export function useMonthlyStats(months = 12) {
   const since = useMemo(() => format(subMonths(new Date(), months - 1), MONTH_ID), [months]);
@@ -39,21 +44,35 @@ export function useMonthlyStats(months = 12) {
   const thisMonth = series[series.length - 1];
   const lastMonth = series[series.length - 2];
 
-  return { series, thisMonth, lastMonth, loading, error };
+  /** No counter docs at all is the signature of a backend that never ran. */
+  const hasAnyStats = data.length > 0;
+
+  return { series, thisMonth, lastMonth, loading, error, hasAnyStats };
 }
 
 /** Live document listener for a single monthly counter doc. */
 export function useCurrentMonthRevenue() {
   const [revenueCents, setRevenueCents] = useState(0);
+  const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     const id = format(new Date(), MONTH_ID);
-    return onSnapshot(ref.monthlyStat(id), (snap) => {
-      setRevenueCents(snap.exists() ? ((snap.data().revenueCents as number) ?? 0) : 0);
-    });
+    return onSnapshot(
+      ref.monthlyStat(id),
+      (snap) => {
+        setRevenueCents(snap.exists() ? ((snap.data().revenueCents as number) ?? 0) : 0);
+        setError(null);
+      },
+      // Without this handler a rules rejection leaves the tile reading ₱0 forever, which is
+      // a plausible number — the failure is invisible precisely because zero looks like data.
+      (err) => {
+        console.error('[firestore] monthly revenue listener failed', err);
+        setError(err);
+      }
+    );
   }, []);
 
-  return revenueCents;
+  return { revenueCents, error };
 }
 
 export function useTodayCheckins() {
@@ -66,13 +85,24 @@ export function useActiveMembers() {
   return useCollection<Member>(activeQuery);
 }
 
-/** Members whose membership lapses inside `days` — the at-risk list and the 90-day tile. */
+/**
+ * Members whose membership lapses inside `days` — the at-risk list and the 90-day tile.
+ *
+ * Filtered in memory off the active-members listener rather than with a range query. The
+ * `status == 'active' && endDate <= cutoff` version needs a composite index, and until that
+ * index is deployed the listener fails and the tile silently reads 0 — the same number a
+ * healthy gym with nobody expiring would show.
+ */
 export function useExpiringMembers(days = 90) {
-  const cutoff = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    return d;
-  }, [days]);
-  const expiringQuery = useMemo(() => q.expiringBefore(cutoff), [cutoff]);
-  return useCollection<Member>(expiringQuery);
+  const { data: active, loading, error } = useActiveMembers();
+
+  const data = useMemo(() => {
+    const soon = active.filter((member) => {
+      const left = daysUntil(member.endDate);
+      return left !== null && left <= days;
+    });
+    return sortByDateAsc(soon, 'endDate');
+  }, [active, days]);
+
+  return { data, loading, error };
 }

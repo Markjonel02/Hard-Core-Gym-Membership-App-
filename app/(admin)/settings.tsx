@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Alert, Platform, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { router } from "expo-router";
 import { httpsCallable } from "firebase/functions";
 
@@ -10,10 +17,12 @@ import { Input } from "@/components/ui/Input";
 import { Screen } from "@/components/ui/Screen";
 import { useThemeColor } from "@/components/Themed";
 import { useAuth } from "@/context/AuthContext";
-import { FontSize, FontWeight, Spacing } from "@/constants/Theme";
+import { FontSize, FontWeight, Radius, Spacing } from "@/constants/Theme";
+import { useAccountSearch } from "@/hooks/useUsers";
 import { authErrorMessage } from "@/lib/authErrors";
 import { functions } from "@/lib/firebase";
 import { initialsOf } from "@/lib/format";
+import { memberDisplayName } from "@/lib/names";
 import type { Role } from "@/types/models";
 
 export default function AdminSettings() {
@@ -23,6 +32,8 @@ export default function AdminSettings() {
   const muted = useThemeColor({}, "muted");
   const brand = useThemeColor({}, "brand");
   const brandMuted = useThemeColor({}, "brandMuted");
+  const border = useThemeColor({}, "border");
+  const surface = useThemeColor({}, "surface");
   const success = useThemeColor({}, "success");
   const danger = useThemeColor({}, "danger");
 
@@ -31,6 +42,20 @@ export default function AdminSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Type-ahead over the accounts already loaded by the listener, so it costs no extra reads.
+   *
+   * It matters more than a convenience: `setRole` resolves the email against Firebase Auth
+   * and fails outright if nothing matches, so a typo used to come back as a flat "no account
+   * exists" with no way to tell a wrong address from a person who never signed up. Showing
+   * real matches as you type makes that distinction visible before you press the button.
+   */
+  const { data: suggestions } = useAccountSearch(email);
+  const [picked, setPicked] = useState<string | null>(null);
+  // Hidden once the shown address is the one already in the box — nothing left to suggest.
+  const showSuggestions =
+    suggestions.length > 0 && picked !== email.trim().toLowerCase();
 
   const displayName = profile?.displayName ?? user?.displayName ?? "Staff";
 
@@ -47,6 +72,7 @@ export default function AdminSettings() {
         `${email.trim()} is now ${targetRole}. They'll see it after signing in again.`,
       );
       setEmail("");
+      setPicked(null);
     } catch (err) {
       setError(authErrorMessage(err));
     } finally {
@@ -128,10 +154,66 @@ export default function AdminSettings() {
             label="Account email"
             placeholder="staff@example.com"
             autoCapitalize="none"
+            autoCorrect={false}
             keyboardType="email-address"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(next) => {
+              setEmail(next);
+              setPicked(null);
+            }}
+            hint={
+              email.trim().length > 0 && email.trim().length < 3
+                ? "Keep typing — matches appear after 3 characters."
+                : undefined
+            }
           />
+
+          {showSuggestions ? (
+            <View
+              style={[styles.suggestions, { borderColor: border, backgroundColor: surface }]}>
+              {suggestions.map((account, index) => {
+                const address = account.email ?? "";
+                return (
+                  <Pressable
+                    key={account.uid}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setEmail(address);
+                      setPicked(address.trim().toLowerCase());
+                      setTargetRole(
+                        // Pre-select the role they don't have yet: an admin reaching for
+                        // someone already staff is almost always promoting them.
+                        account.role === "staff" ? "admin" : "staff",
+                      );
+                    }}
+                    style={({ pressed }) => [
+                      styles.suggestion,
+                      index > 0 && {
+                        borderTopWidth: StyleSheet.hairlineWidth,
+                        borderTopColor: border,
+                      },
+                      pressed && { backgroundColor: brandMuted },
+                    ]}>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text
+                        style={[styles.suggestionEmail, { color: text }]}
+                        numberOfLines={1}>
+                        {address || "No email on file"}
+                      </Text>
+                      <Text
+                        style={{ color: muted, fontSize: FontSize.xs }}
+                        numberOfLines={1}>
+                        {memberDisplayName(account)}
+                        {account.username ? ` · @${account.username}` : ""}
+                      </Text>
+                    </View>
+                    <Badge label={account.role ?? "member"} tone="neutral" />
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+
           <View style={styles.roleRow}>
             {(["member", "staff", "admin"] as Role[]).map((r) => (
               <Button
@@ -196,6 +278,19 @@ const styles = StyleSheet.create({
   initials: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   name: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  suggestions: {
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  suggestion: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+  },
+  suggestionEmail: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
   roleRow: { flexDirection: "row", gap: Spacing.sm },
   roleButton: { flex: 1, paddingHorizontal: Spacing.sm },
 });

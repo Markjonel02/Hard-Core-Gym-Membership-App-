@@ -51,6 +51,13 @@ function RootLayoutNav() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
+          {/*
+            Deliberately a root route rather than part of (auth): an unverified account *is*
+            signed in, so the auth group's "signed in? leave" guard and this screen's own
+            redirect would bounce off each other every render. Sitting outside every guarded
+            group, it is reachable in exactly the one state that needs it.
+          */}
+          <Stack.Screen name="verify-email" />
           <Stack.Screen name="(member)" />
           <Stack.Screen name="(admin)" />
           <Stack.Screen name="scan" options={{ presentation: 'modal', headerShown: true, title: 'Scan Member QR' }} />

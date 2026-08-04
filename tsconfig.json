@@ -2,6 +2,11 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // `scripts/*.ts` run directly under `node --experimental-strip-types`, which resolves
+    // real file paths and so needs the `.ts` extension written out. Metro is what compiles
+    // the app, so tsc here is a checker only — hence noEmit alongside it.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "paths": {
       "@/*": [
         "./*"

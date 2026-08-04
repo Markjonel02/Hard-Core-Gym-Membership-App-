@@ -10,6 +10,7 @@ import { useAuth } from '@/context/AuthContext';
 import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { upsertUserProfile } from '@/lib/firestore';
 import { formatDate, initialsOf } from '@/lib/format';
+import { formatPhone } from '@/lib/phone';
 
 export default function Profile() {
   const { user, profile, role, member, signOut } = useAuth();
@@ -58,7 +59,15 @@ export default function Profile() {
         </View>
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={[styles.name, { color: text }]}>{displayName}</Text>
+          {profile?.username ? (
+            <Text style={{ color: muted }}>@{profile.username}</Text>
+          ) : null}
           <Text style={{ color: muted }}>{user?.email}</Text>
+          {profile?.phone ? (
+            <Text style={{ color: muted, fontSize: FontSize.sm }}>
+              {formatPhone(profile.phone)}
+            </Text>
+          ) : null}
           {role ? (
             <Text style={{ color: muted, fontSize: FontSize.sm }}>
               Role: {role}
@@ -71,7 +80,7 @@ export default function Profile() {
         <Card style={{ gap: Spacing.md }}>
           <Text style={[styles.sectionTitle, { color: text }]}>Membership details</Text>
           <Row label="Plan" value={member.planName} border={border} muted={muted} text={text} />
-          <Row label="Phone" value={member.phone || '—'} border={border} muted={muted} text={text} />
+          <Row label="Phone" value={member.phone ? formatPhone(member.phone) : '—'} border={border} muted={muted} text={text} />
           <Row
             label="Started"
             value={formatDate(member.startDate)}

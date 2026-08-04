@@ -13,6 +13,7 @@ import { useThemeColor } from '@/components/Themed';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/Theme';
 import { useAllMembers } from '@/hooks/useMember';
 import { daysUntil, formatDate, initialsOf, membershipTone } from '@/lib/format';
+import { memberDisplayName, sortByDisplayName } from '@/lib/names';
 import type { MemberStatus } from '@/types/models';
 
 type Filter = 'all' | MemberStatus | 'expiring';
@@ -26,7 +27,7 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 export default function MembersList() {
-  const { data: members, loading } = useAllMembers();
+  const { data: members, loading, error } = useAllMembers();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
 
@@ -38,12 +39,14 @@ export default function MembersList() {
   const border = useThemeColor({}, 'border');
 
   // Client-side filtering: Firestore can't do substring search, and a single gym's
-  // roster is small enough to filter in memory off the existing live listener.
+  // roster is small enough to filter in memory off the existing live listener. The sort
+  // is here too — the query dropped orderBy so that rows missing `fullName` still load.
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return members.filter((member) => {
+    const matches = members.filter((member) => {
       if (needle) {
-        const haystack = `${member.fullName} ${member.email} ${member.phone}`.toLowerCase();
+        const haystack =
+          `${memberDisplayName(member)} ${member.email ?? ''} ${member.phone ?? ''}`.toLowerCase();
         if (!haystack.includes(needle)) return false;
       }
       if (filter === 'all') return true;
@@ -53,6 +56,7 @@ export default function MembersList() {
       }
       return member.status === filter;
     });
+    return sortByDisplayName(matches);
   }, [members, search, filter]);
 
   return (
@@ -99,6 +103,18 @@ export default function MembersList() {
       <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
         {loading ? (
           <SkeletonList rows={5} height={72} />
+        ) : error ? (
+          /*
+           * Distinct from the empty state on purpose. A rules rejection or a missing index
+           * also yields zero rows, and rendering "no members match" for those sends staff
+           * looking for missing data instead of a broken listener.
+           */
+          <Card>
+            <EmptyState
+              title="Could not load members"
+              message={`${error.message}\n\nThis is a permissions or connection problem, not an empty roster.`}
+            />
+          </Card>
         ) : filtered.length === 0 ? (
           <Card>
             <EmptyState
@@ -119,6 +135,7 @@ export default function MembersList() {
         ) : (
           filtered.map((member) => {
             const days = daysUntil(member.endDate);
+            const name = memberDisplayName(member);
             return (
               <Pressable
                 key={member.id}
@@ -127,15 +144,15 @@ export default function MembersList() {
                   <Card style={[styles.memberRow, { opacity: pressed ? 0.7 : 1 }]}>
                     <View style={[styles.avatar, { backgroundColor: brandMuted }]}>
                       <Text style={[styles.initials, { color: brand }]}>
-                        {initialsOf(member.fullName)}
+                        {initialsOf(name)}
                       </Text>
                     </View>
                     <View style={{ flex: 1, gap: 2 }}>
                       <Text style={[styles.name, { color: text }]} numberOfLines={1}>
-                        {member.fullName}
+                        {name}
                       </Text>
                       <Text style={{ color: muted, fontSize: FontSize.sm }} numberOfLines={1}>
-                        {member.planName} · expires {formatDate(member.endDate)}
+                        {member.planName ?? 'No plan'} · expires {formatDate(member.endDate)}
                       </Text>
                     </View>
                     <Badge

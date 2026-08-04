@@ -20,6 +20,7 @@ import {
   useMonthlyStats,
   useTodayCheckins,
 } from '@/hooks/useStats';
+import { usePendingAccounts } from '@/hooks/useUsers';
 import { exportPaymentsCsv } from '@/lib/csv';
 import { q } from '@/lib/firestore';
 import {
@@ -28,23 +29,34 @@ import {
   formatCurrency,
   formatDate,
   membershipTone,
+  sortByDateDesc,
 } from '@/lib/format';
+import { memberDisplayName } from '@/lib/names';
 import type { Payment } from '@/types/models';
 
 export default function AdminSales() {
-  const { series, thisMonth, lastMonth, loading } = useMonthlyStats(12);
-  const revenueThisMonth = useCurrentMonthRevenue();
-  const { data: activeMembers } = useActiveMembers();
+  const { series, thisMonth, lastMonth, loading, error: statsError } = useMonthlyStats(12);
+  const { revenueCents: revenueThisMonth } = useCurrentMonthRevenue();
+  const { data: activeMembers, error: membersError } = useActiveMembers();
   const { data: expiring } = useExpiringMembers(90);
   const { data: todayCheckins } = useTodayCheckins();
+  const { data: pending } = usePendingAccounts();
 
-  const recentQuery = useMemo(() => q.recentPayments(8), []);
-  const { data: recentPayments } = useCollection<Payment>(recentQuery);
+  const recentQuery = useMemo(() => q.recentPayments(), []);
+  const { data: allPayments } = useCollection<Payment>(recentQuery);
+  // Sorted and capped here: the query has no orderBy so a payment recorded seconds ago,
+  // whose serverTimestamp has not resolved, still appears instead of being filtered out.
+  const recentPayments = useMemo(
+    () => sortByDateDesc(allPayments, 'paidAt').slice(0, 8),
+    [allPayments]
+  );
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
   const brand = useThemeColor({}, 'brand');
   const success = useThemeColor({}, 'success');
+  const warning = useThemeColor({}, 'warning');
+  const danger = useThemeColor({}, 'danger');
   const border = useThemeColor({}, 'border');
 
   const { width } = useWindowDimensions();
@@ -77,6 +89,25 @@ export default function AdminSales() {
 
   return (
     <Screen title="Sales" subtitle="Revenue, growth, and retention at a glance">
+      {/*
+        A failed listener leaves every number at zero, which reads as a quiet gym rather than
+        a broken read. Saying so up front is the difference between "no sales yet" and
+        "this dashboard is not seeing the database".
+      */}
+      {membersError || statsError ? (
+        <Card style={{ gap: Spacing.xs, borderColor: danger, borderWidth: 1 }}>
+          <Text style={{ color: danger, fontWeight: FontWeight.semibold }}>
+            Some figures below could not load
+          </Text>
+          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+            {(membersError ?? statsError)?.message}
+          </Text>
+          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+            Tiles showing 0 may be a permissions or connection problem, not an empty database.
+          </Text>
+        </Card>
+      ) : null}
+
       <View style={styles.tiles}>
         <StatTile
           label="Revenue this month"
@@ -93,6 +124,74 @@ export default function AdminSales() {
         />
         <StatTile label="Check-ins today" value={String(todayCheckins.length)} />
       </View>
+
+      {/*
+        Accounts that signed up and verified but hold no membership record. Without this card
+        they are invisible: they are not in `members`, so no roster, tile, or chart can show
+        them, and the person is left staring at "no membership linked" while the gym has no
+        idea they are waiting. This is the hand-off, not a diagnostic.
+      */}
+      {pending.length > 0 ? (
+        <Card style={{ gap: Spacing.md, borderColor: warning, borderWidth: 1 }}>
+          <View style={styles.legendRow}>
+            <Text style={[styles.sectionTitle, { color: text }]}>Waiting for a membership</Text>
+            <Badge label={`${pending.length}`} tone="warning" />
+          </View>
+          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+            These people created an account but have no plan yet. Add them as a member to link
+            the account, start their term, and give them a check-in QR code.
+          </Text>
+          <View>
+            {pending.slice(0, 6).map((account, index) => (
+              <View
+                key={account.uid}
+                style={[
+                  styles.listRow,
+                  index > 0 && {
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                    borderTopColor: border,
+                  },
+                ]}>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={[styles.rowTitle, { color: text }]} numberOfLines={1}>
+                    {account.name}
+                  </Text>
+                  <Text style={{ color: muted, fontSize: FontSize.sm }} numberOfLines={1}>
+                    {account.email}
+                  </Text>
+                </View>
+                <Button
+                  title="Add"
+                  variant="secondary"
+                  fullWidth={false}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(admin)/members/new',
+                      // Prefills the form and, critically, carries the uid so the new member doc
+                      // links to this login instead of creating an unattached duplicate.
+                      params: {
+                        uid: account.uid,
+                        email: account.email ?? '',
+                        firstName: account.firstName ?? '',
+                        middleName: account.middleName ?? '',
+                        lastName: account.lastName ?? '',
+                        phone: account.phone ?? '',
+                      },
+                    })
+                  }
+                />
+              </View>
+            ))}
+          </View>
+          {pending.length > 6 ? (
+            <Button
+              title={`View all ${pending.length} accounts`}
+              variant="ghost"
+              onPress={() => router.push('/(admin)/users')}
+            />
+          ) : null}
+        </Card>
+      ) : null}
 
       <Card style={{ gap: Spacing.md }}>
         <Text style={[styles.sectionTitle, { color: text }]}>Revenue — last 12 months</Text>
@@ -178,9 +277,11 @@ export default function AdminSales() {
                     },
                   ]}>
                   <View style={{ flex: 1, gap: 2 }}>
-                    <Text style={[styles.rowTitle, { color: text }]}>{member.fullName}</Text>
+                    <Text style={[styles.rowTitle, { color: text }]}>
+                      {memberDisplayName(member)}
+                    </Text>
                     <Text style={{ color: muted, fontSize: FontSize.sm }}>
-                      {member.planName} · expires {formatDate(member.endDate)}
+                      {member.planName ?? 'No plan'} · expires {formatDate(member.endDate)}
                     </Text>
                   </View>
                   <Badge

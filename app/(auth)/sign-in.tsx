@@ -14,13 +14,16 @@ import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { authErrorMessage } from '@/lib/authErrors';
 
 const schema = z.object({
-  email: z.string().min(1, 'Email is required').email('Enter a valid email'),
+  // Deliberately loose: this box takes a username *or* an email, so the only thing worth
+  // rejecting client-side is emptiness. Anything else is a credential error, and telling the
+  // user which half was wrong would leak whether an account exists.
+  identifier: z.string().min(1, 'Enter your username or email'),
   password: z.string().min(1, 'Password is required'),
 });
 
 type FormValues = z.infer<typeof schema>;
 
-const initialValues: FormValues = { email: '', password: '' };
+const initialValues: FormValues = { identifier: '', password: '' };
 
 export default function SignIn() {
   const { signIn } = useAuth();
@@ -48,7 +51,7 @@ export default function SignIn() {
           onSubmit={async (values) => {
             setFormError(null);
             try {
-              await signIn(values.email, values.password);
+              await signIn(values.identifier, values.password);
               router.replace('/');
             } catch (error) {
               // The real cause is logged by AuthContext; this is the short version.
@@ -58,11 +61,12 @@ export default function SignIn() {
           {({ handleSubmit, isSubmitting }) => (
             <Card style={styles.card}>
               <FormikField
-                name="email"
-                label="Email"
-                placeholder="you@example.com"
+                name="identifier"
+                label="Username or email"
+                placeholder="juan.delacruz or you@example.com"
                 autoCapitalize="none"
-                autoComplete="email"
+                autoCorrect={false}
+                autoComplete="username"
                 keyboardType="email-address"
               />
 

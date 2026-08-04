@@ -81,4 +81,13 @@ function createAuth(): Auth {
 
 export const auth = createAuth();
 export const db = getFirestore(app);
-export const functions = getFunctions(app);
+
+/**
+ * The region is not optional. functions/src/index.ts pins every function to asia-southeast1 via
+ * setGlobalOptions, but getFunctions defaults to us-central1 — so a client without this argument
+ * calls a URL where nothing is deployed and every callable fails with an opaque
+ * "internal"/CORS error that looks like a bug in the function rather than a wrong address.
+ * Keep this string in sync with setGlobalOptions there.
+ */
+export const FUNCTIONS_REGION = 'asia-southeast1';
+export const functions = getFunctions(app, FUNCTIONS_REGION);

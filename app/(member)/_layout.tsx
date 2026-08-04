@@ -9,10 +9,11 @@ import Colors from '@/constants/Colors';
 
 export default function MemberLayout() {
   const colorScheme = useColorScheme();
-  const { user, loading } = useAuth();
+  const { user, loading, emailVerified } = useAuth();
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Redirect href="/(auth)/sign-in" />;
+  if (!emailVerified) return <Redirect href="/verify-email" />;
 
   return (
     <Tabs

@@ -2,9 +2,11 @@ import { Redirect, Tabs } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 
 import { LoadingScreen } from '@/components/ui/LoadingScreen';
+import { OverflowMenu } from '@/components/ui/OverflowMenu';
 import { useAuth } from '@/context/AuthContext';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useColorScheme } from '@/components/useColorScheme';
+import { ADMIN_MENU_ITEMS } from '@/constants/AdminMenu';
 import Colors from '@/constants/Colors';
 
 /**
@@ -13,10 +15,11 @@ import Colors from '@/constants/Colors';
  */
 export default function AdminLayout() {
   const colorScheme = useColorScheme();
-  const { user, isStaff, loading } = useAuth();
+  const { user, isStaff, loading, emailVerified } = useAuth();
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Redirect href="/(auth)/sign-in" />;
+  if (!emailVerified) return <Redirect href="/verify-email" />;
   if (!isStaff) return <Redirect href="/(member)" />;
 
   return (
@@ -31,6 +34,7 @@ export default function AdminLayout() {
         headerStyle: { backgroundColor: Colors[colorScheme].card },
         headerTintColor: Colors[colorScheme].text,
         headerShown: useClientOnlyValue(false, true),
+        headerRight: () => <OverflowMenu items={ADMIN_MENU_ITEMS} />,
       }}>
       <Tabs.Screen
         name="index"
@@ -49,23 +53,11 @@ export default function AdminLayout() {
         name="members"
         options={{
           title: 'Members',
+          // The nested Stack draws its own header, menu included.
           headerShown: false,
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{ ios: 'person.2.fill', android: 'group', web: 'group' }}
-              tintColor={color}
-              size={26}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="plans"
-        options={{
-          title: 'Plans',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'tag.fill', android: 'sell', web: 'sell' }}
               tintColor={color}
               size={26}
             />
@@ -85,6 +77,14 @@ export default function AdminLayout() {
           ),
         }}
       />
+
+      {/*
+        Registered so the routes exist and keep their header, but `href: null` keeps them out
+        of the tab bar — they are reached from the ⋮ menu above. Omitting the screens entirely
+        would still route, only without the group's header styling.
+      */}
+      <Tabs.Screen name="plans" options={{ title: 'Plans', href: null }} />
+      <Tabs.Screen name="users" options={{ title: 'Accounts', href: null }} />
     </Tabs>
   );
 }

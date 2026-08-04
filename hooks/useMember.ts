@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useCollection } from '@/hooks/useCollection';
 import { db } from '@/lib/firebase';
 import { q } from '@/lib/firestore';
-import { daysUntil, toDate } from '@/lib/format';
+import { daysUntil, sortByDateDesc, toDate } from '@/lib/format';
 import type { CheckIn, Member, Payment, Plan } from '@/types/models';
 
 /** Derived membership timeline for the member dashboard ring. */
@@ -36,32 +36,50 @@ export function useMembership() {
   }, [member]);
 }
 
+/**
+ * Newest-first payment history. The query is unordered (see lib/firestore.ts) so the sort
+ * lives here — which also means a payment whose serverTimestamp is still resolving shows up
+ * immediately instead of being dropped by an orderBy on a field it does not have yet.
+ */
 export function useMyPayments() {
   const { member } = useAuth();
   const paymentsQuery = useMemo(
     () => (member ? q.paymentsForMember(member.id) : null),
     [member]
   );
-  return useCollection<Payment>(paymentsQuery);
+  const { data, loading, error } = useCollection<Payment>(paymentsQuery);
+  const sorted = useMemo(() => sortByDateDesc(data, 'paidAt'), [data]);
+  return { data: sorted, loading, error };
 }
 
 export function useMyCheckins(n = 10) {
   const { member } = useAuth();
   const checkinsQuery = useMemo(
-    () => (member ? q.checkinsForMember(member.id, n) : null),
-    [member, n]
+    () => (member ? q.checkinsForMember(member.id) : null),
+    [member]
   );
-  return useCollection<CheckIn>(checkinsQuery);
+  const { data, loading, error } = useCollection<CheckIn>(checkinsQuery);
+  const sorted = useMemo(() => sortByDateDesc(data, 'at').slice(0, n), [data, n]);
+  return { data: sorted, loading, error };
+}
+
+/** Cheapest plan first — the ordering the old `orderBy('priceCents')` provided. */
+function byPrice(plans: Plan[]): Plan[] {
+  return [...plans].sort((a, b) => (a.priceCents ?? 0) - (b.priceCents ?? 0));
 }
 
 export function useActivePlans() {
   const plansQuery = useMemo(() => q.activePlans(), []);
-  return useCollection<Plan>(plansQuery);
+  const { data, loading, error } = useCollection<Plan>(plansQuery);
+  const sorted = useMemo(() => byPrice(data), [data]);
+  return { data: sorted, loading, error };
 }
 
 export function useAllPlans() {
   const plansQuery = useMemo(() => q.allPlans(), []);
-  return useCollection<Plan>(plansQuery);
+  const { data, loading, error } = useCollection<Plan>(plansQuery);
+  const sorted = useMemo(() => byPrice(data), [data]);
+  return { data: sorted, loading, error };
 }
 
 export function useAllMembers() {
@@ -73,6 +91,7 @@ export function useAllMembers() {
 export function useMemberById(id: string | undefined) {
   const [member, setMember] = useState<Member | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     if (!id) {
@@ -84,17 +103,27 @@ export function useMemberById(id: string | undefined) {
       doc(db, 'members', id),
       (snap) => {
         setMember(snap.exists() ? ({ id: snap.id, ...snap.data() } as Member) : null);
+        setError(null);
         setLoading(false);
       },
-      () => setLoading(false)
+      (err) => {
+        console.error('[firestore] member listener failed', err);
+        setError(err);
+        setLoading(false);
+      }
     );
   }, [id]);
 
   const paymentsQuery = useMemo(() => (id ? q.paymentsForMember(id) : null), [id]);
-  const { data: payments } = useCollection<Payment>(paymentsQuery);
+  const { data: rawPayments } = useCollection<Payment>(paymentsQuery);
+  const payments = useMemo(() => sortByDateDesc(rawPayments, 'paidAt'), [rawPayments]);
 
-  const checkinsQuery = useMemo(() => (id ? q.checkinsForMember(id, 20) : null), [id]);
-  const { data: checkins } = useCollection<CheckIn>(checkinsQuery);
+  const checkinsQuery = useMemo(() => (id ? q.checkinsForMember(id) : null), [id]);
+  const { data: rawCheckins } = useCollection<CheckIn>(checkinsQuery);
+  const checkins = useMemo(
+    () => sortByDateDesc(rawCheckins, 'at').slice(0, 20),
+    [rawCheckins]
+  );
 
-  return { member, payments, checkins, loading };
+  return { member, payments, checkins, loading, error };
 }

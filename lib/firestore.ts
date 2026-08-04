@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 
 import { db } from '@/lib/firebase';
+import { composeFullName, normalizeNameParts } from '@/lib/names';
 import type {
   Announcement,
   CheckIn,
@@ -24,10 +25,12 @@ import type {
   Payment,
   Plan,
   UserDoc,
+  UsernameDoc,
 } from '@/types/models';
 
 export const col = {
   users: () => collection(db, 'users'),
+  usernames: () => collection(db, 'usernames'),
   members: () => collection(db, 'members'),
   plans: () => collection(db, 'plans'),
   payments: () => collection(db, 'payments'),
@@ -39,6 +42,8 @@ export const col = {
 
 export const ref = {
   user: (uid: string) => doc(db, 'users', uid),
+  /** Doc id *is* the lowercased username — that is what enforces uniqueness. */
+  username: (username: string) => doc(db, 'usernames', username),
   member: (id: string) => doc(db, 'members', id),
   plan: (id: string) => doc(db, 'plans', id),
   dailyStat: (id: string) => doc(db, 'stats', 'daily', 'entries', id),
@@ -55,42 +60,48 @@ export function withId<T>(snap: QueryDocumentSnapshot): T {
 export const q = {
   memberByUid: (uid: string) => query(col.members(), where('uid', '==', uid), fbLimit(1)),
 
-  allMembers: () => query(col.members(), orderBy('fullName')),
+  /**
+   * Deliberately unordered, and every other query below follows the same rule.
+   *
+   * Two Firestore behaviours bite here, both of them silent:
+   *  - `orderBy(field)` excludes documents that lack the field entirely — not sorted last,
+   *    *absent*. A member written before `fullName` was composed on create would vanish.
+   *  - a `where` + `orderBy` on different fields needs a composite index, and until it is
+   *    deployed the listener errors. useCollection turns that into an empty array, which is
+   *    indistinguishable from "you have no members" on screen.
+   *
+   * A single gym's roster is a few hundred rows at most and the screens already filter in
+   * memory, so ordering and limiting happen there (sortByDisplayName / slice) and the reads
+   * need no index to work.
+   */
+  allMembers: () => query(col.members()),
 
   membersByStatus: (status: MemberStatus) =>
-    query(col.members(), where('status', '==', status), orderBy('fullName')),
+    query(col.members(), where('status', '==', status)),
 
-  /** At-risk list for the admin dashboard. Needs the (status, endDate) composite index. */
-  expiringBefore: (cutoff: Date) =>
-    query(
-      col.members(),
-      where('status', '==', 'active'),
-      where('endDate', '<=', cutoff),
-      orderBy('endDate')
-    ),
+  /** Every account, for the admin user-management screen. Requires the staff read rule. */
+  allUsers: () => query(col.users()),
 
-  activePlans: () => query(col.plans(), where('active', '==', true), orderBy('priceCents')),
+  activePlans: () => query(col.plans(), where('active', '==', true)),
 
-  allPlans: () => query(col.plans(), orderBy('priceCents')),
+  allPlans: () => query(col.plans()),
 
   paymentsForMember: (memberId: string) =>
-    query(col.payments(), where('memberId', '==', memberId), orderBy('paidAt', 'desc')),
+    query(col.payments(), where('memberId', '==', memberId)),
 
-  recentPayments: (n = 20) => query(col.payments(), orderBy('paidAt', 'desc'), fbLimit(n)),
+  /**
+   * Unlimited on the wire, trimmed by the caller. `orderBy('paidAt')` would hide a payment
+   * whose serverTimestamp is still resolving — exactly the one just recorded at the front
+   * desk, which is the one staff look for to confirm the sale registered.
+   */
+  recentPayments: () => query(col.payments()),
 
-  checkinsForMember: (memberId: string, n = 10) =>
-    query(col.checkins(), where('memberId', '==', memberId), orderBy('at', 'desc'), fbLimit(n)),
+  checkinsForMember: (memberId: string) =>
+    query(col.checkins(), where('memberId', '==', memberId)),
 
-  checkinsSince: (since: Date) =>
-    query(col.checkins(), where('at', '>=', since), orderBy('at', 'desc')),
+  checkinsSince: (since: Date) => query(col.checkins(), where('at', '>=', since)),
 
-  activeAnnouncements: () =>
-    query(
-      col.announcements(),
-      where('active', '==', true),
-      orderBy('createdAt', 'desc'),
-      fbLimit(5)
-    ),
+  activeAnnouncements: () => query(col.announcements(), where('active', '==', true)),
 
   /** Trailing window for the revenue chart; ids are YYYY-MM so lexical order is chronological. */
   monthlyStatsSince: (yyyymm: string) =>
@@ -101,16 +112,20 @@ export const q = {
 
 export type NewMemberInput = Pick<
   Member,
-  'fullName' | 'email' | 'phone' | 'planId' | 'planName'
+  'firstName' | 'lastName' | 'email' | 'phone' | 'planId' | 'planName'
 > &
-  Partial<Pick<Member, 'uid' | 'emergencyContact' | 'notes'>> & {
+  Partial<Pick<Member, 'uid' | 'middleName' | 'emergencyContact' | 'notes'>> & {
     startDate: Date;
     endDate: Date;
   };
 
 export async function createMember(input: NewMemberInput) {
+  const name = normalizeNameParts(input);
   return addDoc(col.members(), {
     ...input,
+    ...name,
+    // Composed once on write so `orderBy('fullName')` and the search box keep working.
+    fullName: composeFullName(name),
     uid: input.uid ?? null,
     status: 'active' satisfies MemberStatus,
     joinedAt: serverTimestamp(),
@@ -203,4 +218,4 @@ export async function fetchAllPayments(): Promise<Payment[]> {
   return snap.docs.map((d) => withId<Payment>(d));
 }
 
-export type { Announcement, CheckIn, DailyStats, Member, MonthlyStats, Payment, Plan, UserDoc };
+export type { Announcement, CheckIn, DailyStats, Member, MonthlyStats, Payment, Plan, UserDoc, UsernameDoc };

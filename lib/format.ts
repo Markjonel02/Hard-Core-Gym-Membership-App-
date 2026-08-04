@@ -43,6 +43,39 @@ export function daysUntil(value: Timestamp | Date | null | undefined): number | 
   return date ? differenceInCalendarDays(date, new Date()) : null;
 }
 
+type DateLike = Timestamp | Date | null | undefined;
+
+/**
+ * Client-side replacement for `orderBy(field, 'desc')`.
+ *
+ * The queries in lib/firestore.ts deliberately carry no orderBy (see the note there), so the
+ * ordering happens here. A doc whose `serverTimestamp()` has not resolved yet reads as null;
+ * it sorts *first* rather than last, because the only way to be mid-write is to have just been
+ * written — and that row is precisely the one the front desk is looking for.
+ */
+export function sortByDateDesc<T>(rows: T[], key: keyof T): T[] {
+  return [...rows].sort((a, b) => {
+    const ta = toDate(a[key] as DateLike)?.getTime();
+    const tb = toDate(b[key] as DateLike)?.getTime();
+    if (ta === undefined && tb === undefined) return 0;
+    if (ta === undefined) return -1;
+    if (tb === undefined) return 1;
+    return tb - ta;
+  });
+}
+
+/** Ascending counterpart — "soonest to expire first". Rows with no date sort last. */
+export function sortByDateAsc<T>(rows: T[], key: keyof T): T[] {
+  return [...rows].sort((a, b) => {
+    const ta = toDate(a[key] as DateLike)?.getTime();
+    const tb = toDate(b[key] as DateLike)?.getTime();
+    if (ta === undefined && tb === undefined) return 0;
+    if (ta === undefined) return 1;
+    if (tb === undefined) return -1;
+    return ta - tb;
+  });
+}
+
 export function statusTone(status: MemberStatus): BadgeTone {
   switch (status) {
     case 'active':

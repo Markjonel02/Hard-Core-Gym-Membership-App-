@@ -15,7 +15,8 @@ import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { useCollection } from '@/hooks/useCollection';
 import { useMembership, useMyCheckins } from '@/hooks/useMember';
 import { q } from '@/lib/firestore';
-import { formatDate, formatDateTime, membershipTone } from '@/lib/format';
+import { formatDate, formatDateTime, membershipTone, sortByDateDesc } from '@/lib/format';
+import { greetingName } from '@/lib/names';
 import type { Announcement } from '@/types/models';
 
 export default function MemberHome() {
@@ -24,7 +25,12 @@ export default function MemberHome() {
   const { data: checkins, loading: checkinsLoading } = useMyCheckins(5);
 
   const announcementsQuery = useMemo(() => q.activeAnnouncements(), []);
-  const { data: announcements } = useCollection<Announcement>(announcementsQuery);
+  const { data: allAnnouncements } = useCollection<Announcement>(announcementsQuery);
+  // Newest first, capped — the query dropped its orderBy/limit so nothing depends on an index.
+  const announcements = useMemo(
+    () => sortByDateDesc(allAnnouncements, 'createdAt').slice(0, 5),
+    [allAnnouncements]
+  );
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -33,7 +39,9 @@ export default function MemberHome() {
   const warning = useThemeColor({}, 'warning');
   const danger = useThemeColor({}, 'danger');
 
-  const firstName = (profile?.displayName ?? user?.displayName ?? 'there').split(' ')[0];
+  // Prefers the stored first name over splitting displayName, which guesses badly on
+  // multi-word surnames like "Dela Cruz".
+  const firstName = greetingName([profile?.firstName, profile?.displayName, user?.displayName]);
 
   if (loading) {
     return (
