@@ -9,6 +9,7 @@ import { useThemeColor } from '@/components/Themed';
 import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { useMembership, useMyCheckins } from '@/hooks/useMember';
 import { formatDateTime, membershipTone } from '@/lib/format';
+import { buildMemberPass } from '@/lib/nonMembers';
 
 export default function CheckIn() {
   const { member, daysRemaining, isExpired } = useMembership();
@@ -32,8 +33,10 @@ export default function CheckIn() {
     );
   }
 
-  // Namespaced payload so the scanner can reject arbitrary QR codes.
-  const payload = JSON.stringify({ t: 'hardcore-gym', v: 1, memberId: member.id });
+  // Namespaced payload so the scanner can reject arbitrary QR codes. Built through the shared
+  // helper because the scanner parses member and walk-in passes with one function — the envelope
+  // has to be defined in exactly one place or the two drift.
+  const payload = buildMemberPass(member.id);
 
   return (
     <Screen title="Check-in" subtitle="Show this at the front desk">

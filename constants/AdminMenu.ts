@@ -28,8 +28,14 @@ export const ADMIN_MENU_ITEMS: OverflowMenuItem[] = [
   {
     label: 'QR scanner',
     icon: { ios: 'qrcode.viewfinder', android: 'qr_code_scanner', web: 'qr_code_scanner' },
-    hint: 'Check a member in',
+    hint: 'Check anyone in',
     onPress: () => router.push('/scan'),
+  },
+  {
+    label: 'Attendance',
+    icon: { ios: 'list.clipboard.fill', android: 'checklist', web: 'checklist' },
+    hint: 'Every visit, members and walk-ins',
+    onPress: () => router.push('/(admin)/attendance'),
   },
   {
     label: 'Settings',

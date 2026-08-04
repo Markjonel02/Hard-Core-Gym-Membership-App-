@@ -60,7 +60,7 @@ function RootLayoutNav() {
           <Stack.Screen name="verify-email" />
           <Stack.Screen name="(member)" />
           <Stack.Screen name="(admin)" />
-          <Stack.Screen name="scan" options={{ presentation: 'modal', headerShown: true, title: 'Scan Member QR' }} />
+          <Stack.Screen name="scan" options={{ presentation: 'modal', headerShown: true, title: 'Scan QR Pass' }} />
         </Stack>
       </ThemeProvider>
     </AuthProvider>

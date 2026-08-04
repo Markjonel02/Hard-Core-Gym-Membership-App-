@@ -103,9 +103,39 @@ export interface Payment {
   recordedBy: string;
 }
 
+/**
+ * A walk-in who holds no membership. Created by the *staff* client when their QR pass is
+ * scanned, never by the visitor's own device — an unauthenticated phone cannot write to
+ * Firestore, and opening this collection to anonymous creates to work around that would be a
+ * far worse trade than accepting the name is self-asserted.
+ *
+ * The id is minted on the visitor's device and carried in the QR, which is what lets a
+ * returning walk-in merge into their existing record instead of spawning a duplicate.
+ */
+export interface NonMember {
+  id: string;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  /** Composed on write, same reason as `Member.fullName`: it backs the attendance search box. */
+  fullName: string;
+  visits: number;
+  firstSeenAt: Timestamp;
+  lastVisitAt: Timestamp;
+}
+
 export interface CheckIn {
   id: string;
-  memberId: string;
+  /**
+   * Which kind of visitor this row is for. Read it through a default rather than assuming it
+   * exists — rows written before non-members existed carry no `kind` at all, which is also why
+   * the firestore.rules read branch uses `resource.data.get('kind','member')`.
+   */
+  kind: 'member' | 'nonmember';
+  /** Null for a non-member. Keeps `q.checkinsForMember()` correct without a second collection. */
+  memberId: string | null;
+  nonMemberId: string | null;
+  /** The name as it stood at scan time, whichever kind of visitor it was. */
   memberName: string;
   at: Timestamp;
   recordedBy: string;

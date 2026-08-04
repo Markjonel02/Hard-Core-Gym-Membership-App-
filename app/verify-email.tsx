@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, StyleSheet, Text, View } from 'react-native';
-import { Redirect, router } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AppState, StyleSheet, Text, View } from "react-native";
+import { Redirect, router } from "expo-router";
 
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { LoadingScreen } from '@/components/ui/LoadingScreen';
-import { useThemeColor } from '@/components/Themed';
-import { useAuth } from '@/context/AuthContext';
-import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
-import { authErrorMessage } from '@/lib/authErrors';
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { useThemeColor } from "@/components/Themed";
+import { useAuth } from "@/context/AuthContext";
+import { FontSize, FontWeight, Spacing } from "@/constants/Theme";
+import { authErrorMessage } from "@/lib/authErrors";
 
 /** Firebase rejects rapid resends with auth/too-many-requests; this keeps us under that. */
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -23,14 +23,21 @@ const RESEND_COOLDOWN_SECONDS = 60;
  * their inbox), and offers a manual button for when neither of those has fired yet.
  */
 export default function VerifyEmail() {
-  const { user, emailVerified, loading, reloadUser, resendVerificationEmail, signOut } = useAuth();
+  const {
+    user,
+    emailVerified,
+    loading,
+    reloadUser,
+    resendVerificationEmail,
+    signOut,
+  } = useAuth();
 
-  const background = useThemeColor({}, 'background');
-  const text = useThemeColor({}, 'text');
-  const muted = useThemeColor({}, 'muted');
-  const brand = useThemeColor({}, 'brand');
-  const success = useThemeColor({}, 'success');
-  const danger = useThemeColor({}, 'danger');
+  const background = useThemeColor({}, "background");
+  const text = useThemeColor({}, "text");
+  const muted = useThemeColor({}, "muted");
+  const brand = useThemeColor({}, "brand");
+  const success = useThemeColor({}, "success");
+  const danger = useThemeColor({}, "danger");
 
   const [checking, setChecking] = useState(false);
   const [resending, setResending] = useState(false);
@@ -45,7 +52,7 @@ export default function VerifyEmail() {
   const goToApp = useCallback(() => {
     if (navigated.current) return;
     navigated.current = true;
-    router.replace('/');
+    router.replace("/");
   }, []);
 
   const check = useCallback(
@@ -60,7 +67,9 @@ export default function VerifyEmail() {
         if (verified) {
           goToApp();
         } else if (!options?.silent) {
-          setNotice('Not confirmed yet. Open the link in your inbox, then check again.');
+          setNotice(
+            "Not confirmed yet. Open the link in your inbox, then check again.",
+          );
         }
       } catch (err) {
         if (!options?.silent) setError(authErrorMessage(err));
@@ -68,7 +77,7 @@ export default function VerifyEmail() {
         if (!options?.silent) setChecking(false);
       }
     },
-    [goToApp, reloadUser]
+    [goToApp, reloadUser],
   );
 
   // Background poll. Five seconds is frequent enough that the app has usually caught up by
@@ -80,8 +89,8 @@ export default function VerifyEmail() {
 
   // The common path on mobile: leave for the mail app, tap the link, come back.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void check({ silent: true });
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void check({ silent: true });
     });
     return () => sub.remove();
   }, [check]);
@@ -98,7 +107,7 @@ export default function VerifyEmail() {
     setNotice(null);
     try {
       await resendVerificationEmail();
-      setNotice('Sent. Check your inbox — and your spam folder.');
+      setNotice("Sent. Check your inbox — and your spam folder.");
       setCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
       setError(authErrorMessage(err));
@@ -127,21 +136,33 @@ export default function VerifyEmail() {
         <Text style={[styles.subtitle, { color: muted }]}>
           We sent a confirmation link to
         </Text>
-        <Text style={[styles.email, { color: text }]}>{user?.email ?? 'your email address'}</Text>
+        <Text style={[styles.email, { color: text }]}>
+          {user?.email ?? "your email address"}
+        </Text>
 
         <Card style={styles.card}>
           <Text style={[styles.body, { color: muted }]}>
-            Open that link to activate your account. This screen updates on its own once you
-            do — you can leave it open.
+            Open that link to activate your account. This screen updates on its
+            own once you do — you can leave it open.
           </Text>
 
-          {notice ? <Text style={[styles.notice, { color: success }]}>{notice}</Text> : null}
-          {error ? <Text style={[styles.notice, { color: danger }]}>{error}</Text> : null}
-
-          <Button title="I've confirmed — continue" loading={checking} onPress={() => void check()} />
+          {notice ? (
+            <Text style={[styles.notice, { color: success }]}>{notice}</Text>
+          ) : null}
+          {error ? (
+            <Text style={[styles.notice, { color: danger }]}>{error}</Text>
+          ) : null}
 
           <Button
-            title={cooldown > 0 ? `Resend email (${cooldown}s)` : 'Resend email'}
+            title="I've confirmed — continue"
+            loading={checking}
+            onPress={() => void check()}
+          />
+
+          <Button
+            title={
+              cooldown > 0 ? `Resend email (${cooldown}s)` : "Resend email"
+            }
             variant="secondary"
             disabled={cooldown > 0 || resending}
             loading={resending}
@@ -152,7 +173,8 @@ export default function VerifyEmail() {
         <Text
           onPress={() => void useAnotherAccount()}
           style={[styles.link, { color: muted }]}
-          accessibilityRole="button">
+          accessibilityRole="button"
+        >
           Use a different account
         </Text>
       </View>
@@ -164,20 +186,24 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     padding: Spacing.lg,
     gap: Spacing.sm,
-    width: '100%',
+    width: "100%",
     maxWidth: 460,
-    alignSelf: 'center',
+    alignSelf: "center",
   },
-  icon: { fontSize: 48, textAlign: 'center' },
-  title: { fontSize: FontSize.xxl, fontWeight: FontWeight.bold, textAlign: 'center' },
-  subtitle: { fontSize: FontSize.md, textAlign: 'center' },
+  icon: { fontSize: 48, textAlign: "center" },
+  title: {
+    fontSize: FontSize.xxl,
+    fontWeight: FontWeight.bold,
+    textAlign: "center",
+  },
+  subtitle: { fontSize: FontSize.md, textAlign: "center" },
   email: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.semibold,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: Spacing.md,
   },
   card: { gap: Spacing.lg },
@@ -185,8 +211,8 @@ const styles = StyleSheet.create({
   notice: { fontSize: FontSize.sm },
   link: {
     fontSize: FontSize.sm,
-    textAlign: 'center',
+    textAlign: "center",
     marginTop: Spacing.lg,
-    textDecorationLine: 'underline',
+    textDecorationLine: "underline",
   },
 });

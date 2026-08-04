@@ -16,6 +16,10 @@ import Colors from '@/constants/Colors';
 export default function AdminLayout() {
   const colorScheme = useColorScheme();
   const { user, isStaff, loading, emailVerified } = useAuth();
+  // Hoisted above the guards on purpose: the web build of this hook uses useState/useEffect, so
+  // calling it inside `screenOptions` below made its hook appear only on renders that got past
+  // the redirects — which React reports as a changed hook order.
+  const headerShown = useClientOnlyValue(false, true);
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Redirect href="/(auth)/sign-in" />;
@@ -33,7 +37,7 @@ export default function AdminLayout() {
         },
         headerStyle: { backgroundColor: Colors[colorScheme].card },
         headerTintColor: Colors[colorScheme].text,
-        headerShown: useClientOnlyValue(false, true),
+        headerShown,
         headerRight: () => <OverflowMenu items={ADMIN_MENU_ITEMS} />,
       }}>
       <Tabs.Screen
@@ -85,6 +89,7 @@ export default function AdminLayout() {
       */}
       <Tabs.Screen name="plans" options={{ title: 'Plans', href: null }} />
       <Tabs.Screen name="users" options={{ title: 'Accounts', href: null }} />
+      <Tabs.Screen name="attendance" options={{ title: 'Attendance', href: null }} />
     </Tabs>
   );
 }

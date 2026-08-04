@@ -9,7 +9,13 @@
  * The validation rules themselves live in `usernameRules.ts` and are re-exported here, so
  * callers that only need to validate never pull Firestore in.
  */
-import { doc, getDoc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  runTransaction,
+  serverTimestamp,
+  type Firestore,
+} from 'firebase/firestore';
 
 import { db } from '@/lib/firebase';
 import { ref } from '@/lib/firestore';
@@ -62,16 +68,25 @@ export class UsernameTakenError extends Error {
  * name both read "missing", both try to create, and Firestore aborts the loser. The rules
  * additionally forbid update/delete on this collection, so a claim cannot be reassigned by a
  * client — an existing doc owned by someone else is a hard stop, not something to overwrite.
+ *
+ * `params.firestore` overrides which app's Firestore the claim is written through, and it is not
+ * optional decoration. The create rule requires `request.resource.data.uid == request.auth.uid`,
+ * so the write only passes when it travels on the connection authenticated *as the new account*.
+ * `lib/provisionMemberLogin.ts` creates the account on a secondary app and must pass that app's
+ * Firestore here; sending it through the default `db` reserves the name as whoever is signed in
+ * at the front desk, which the rules deny.
  */
 export async function reserveUsername(params: {
   username: string;
   uid: string;
   email: string;
+  firestore?: Firestore;
 }): Promise<void> {
   const username = canonicalizeUsername(params.username);
-  const docRef = ref.username(username);
+  const target = params.firestore ?? db;
+  const docRef = doc(target, 'usernames', username);
 
-  await runTransaction(db, async (tx) => {
+  await runTransaction(target, async (tx) => {
     const existing = await tx.get(docRef);
 
     if (existing.exists()) {

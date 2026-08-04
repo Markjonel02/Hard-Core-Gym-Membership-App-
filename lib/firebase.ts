@@ -16,8 +16,11 @@ import { getFunctions } from 'firebase/functions';
  * These EXPO_PUBLIC_* values are compiled into the client bundle. That is expected and safe:
  * a Firebase web config is an identifier, not a credential. Access is enforced by
  * firestore.rules and by the role custom claim — never by hiding this config.
+ *
+ * Exported because `lib/provisionMemberLogin.ts` spins up a second app on the same project to
+ * create member logins without replacing the admin's session.
  */
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,

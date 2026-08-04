@@ -22,17 +22,47 @@ import { formatCurrency, formatDate } from '@/lib/format';
 import { termForNewMember } from '@/lib/membership';
 import { composeFullName } from '@/lib/names';
 import { isValidPhone, normalizePhone, PHONE_ERROR, PHONE_HINT } from '@/lib/phone';
+import { provisionMemberLogin } from '@/lib/provisionMemberLogin';
+import { USERNAME_HINT, validateUsername } from '@/lib/usernameRules';
 
-const schema = z.object({
-  firstName: z.string().min(1, 'First name is required'),
-  middleName: z.string().optional(),
-  lastName: z.string().min(1, 'Last name is required'),
-  email: z.string().min(1, 'Email is required').email('Enter a valid email'),
-  phone: z.string().min(1, 'Phone number is required').refine(isValidPhone, PHONE_ERROR),
-  emergencyName: z.string().optional(),
-  emergencyPhone: z.string().optional(),
-  notes: z.string().optional(),
-});
+/** Matches the retired sign-up form, so a credential issued here is as strong as a self-serve one. */
+const MIN_PASSWORD = 8;
+
+/**
+ * The credential fields are optional *in the schema* and required by a check in `onSubmit`.
+ *
+ * They only apply when this form is creating a new login. Opened from the Accounts screen the
+ * member already has one, and zod cannot see that — `linkedUid` lives outside the form. Marking
+ * them required here would block that path with errors on fields it does not even render.
+ */
+const schema = z
+  .object({
+    firstName: z.string().min(1, 'First name is required'),
+    middleName: z.string().optional(),
+    lastName: z.string().min(1, 'Last name is required'),
+    email: z.string().min(1, 'Email is required').email('Enter a valid email'),
+    phone: z.string().min(1, 'Phone number is required').refine(isValidPhone, PHONE_ERROR),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    confirmPassword: z.string().optional(),
+    emergencyName: z.string().optional(),
+    emergencyPhone: z.string().optional(),
+    notes: z.string().optional(),
+  })
+  .refine((values) => !values.password || values.password === values.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  })
+  .refine((values) => !values.password || values.password.length >= MIN_PASSWORD, {
+    message: `Password must be at least ${MIN_PASSWORD} characters`,
+    path: ['password'],
+  })
+  .refine(
+    // `validateUsername` returns an error *message* or null, so the truthiness is inverted from
+    // what a predicate normally reads like. Getting this backwards accepts every invalid name.
+    (values) => !values.username || !validateUsername(values.username),
+    { message: 'Use 3-20 letters, numbers, dots or underscores', path: ['username'] }
+  );
 
 type FormValues = z.infer<typeof schema>;
 
@@ -42,6 +72,18 @@ export default function NewMember() {
   const [planId, setPlanId] = useState<string | null>(null);
   const [collectPayment, setCollectPayment] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
+  /**
+   * The plan lives outside the form, so zod can't flag it. Without this the only signal was a
+   * sentence rendered next to the button at the bottom of a long scroll — from the plan list,
+   * where the eye actually is, pressing Create looked like it did nothing at all.
+   */
+  const [planError, setPlanError] = useState(false);
+  /**
+   * Tracks that the Auth account exists so a later failure can say so. Without it the admin is
+   * told "create failed", retries, and gets `auth/email-already-in-use` — which reads as a
+   * second, unrelated bug rather than the tail of the first one.
+   */
+  const [loginCreated, setLoginCreated] = useState(false);
 
   /**
    * Prefill, arriving from the "Waiting for a membership" card on the sales dashboard.
@@ -60,6 +102,12 @@ export default function NewMember() {
     phone?: string;
   }>();
   const linkedUid = typeof params.uid === 'string' && params.uid ? params.uid : null;
+  /**
+   * Only this form creates the login. Arriving from Accounts the person already has one, and
+   * showing credential fields there would invite an admin to create a second account for
+   * someone who is standing in front of them precisely because they already signed up.
+   */
+  const needsCredentials = linkedUid === null;
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -81,6 +129,9 @@ export default function NewMember() {
       lastName: typeof params.lastName === 'string' ? params.lastName : '',
       email: typeof params.email === 'string' ? params.email : '',
       phone: typeof params.phone === 'string' ? params.phone : '',
+      username: '',
+      password: '',
+      confirmPassword: '',
       emergencyName: '',
       emergencyPhone: '',
       notes: '',
@@ -93,17 +144,57 @@ export default function NewMember() {
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
     if (!selectedPlan || !term) {
-      setFormError('Choose a membership plan.');
+      setPlanError(true);
+      setFormError('Choose a membership plan above.');
       return;
+    }
+    setPlanError(false);
+
+    /*
+     * Credentials are required when this form is creating the login, which zod cannot enforce
+     * because `linkedUid` is not a form field. Checked here instead of silently creating a
+     * member with no way to sign in — the exact gap this whole change exists to close.
+     */
+    if (needsCredentials) {
+      const missing =
+        !values.username?.trim() || !values.password || !values.confirmPassword;
+      if (missing) {
+        setFormError('Set a username and password so the member can sign in.');
+        return;
+      }
     }
 
     try {
       const memberName = composeFullName(values);
 
+      /*
+       * Provisioned before the member doc, deliberately. If this throws, nothing was written and
+       * the admin can correct the username or email and press Create again. The reverse order
+       * would leave a member record behind on every failed attempt.
+       *
+       * If `createMember` fails *after* this succeeds the login still exists — that is why the
+       * catch below says so rather than showing a bare error: the Accounts screen's "Add
+       * membership" button can then attach a membership to it by uid.
+       */
+      let uid = linkedUid;
+      if (needsCredentials) {
+        const provisioned = await provisionMemberLogin({
+          email: values.email.trim().toLowerCase(),
+          password: values.password ?? '',
+          username: values.username ?? '',
+          firstName: values.firstName.trim(),
+          middleName: values.middleName?.trim() || null,
+          lastName: values.lastName.trim(),
+          phone: values.phone,
+        });
+        uid = provisioned.uid;
+        setLoginCreated(true);
+      }
+
       const created = await createMember({
-        // Links the membership to an existing login when this form was opened from the
-        // "Waiting for a membership" card. Null for a walk-in with no account yet.
-        uid: linkedUid,
+        // Links the membership to the login — the one just provisioned, or an existing account
+        // when this form was opened from the "Waiting for a membership" card.
+        uid,
         firstName: values.firstName.trim(),
         middleName: values.middleName?.trim() || null,
         lastName: values.lastName.trim(),
@@ -140,8 +231,25 @@ export default function NewMember() {
 
       router.replace(`/(admin)/members/${created.id}`);
     } catch (error) {
-      setFormError(authErrorMessage(error));
+      // Logged as well as shown: the on-screen sentence is deliberately short, and a rules
+      // rejection here is a deployment problem whose detail belongs in the console.
+      console.error('[members/new] create failed', error);
+      setFormError(
+        loginCreated
+          ? `${authErrorMessage(error)}\n\nThe login was already created — retrying here would report the email as in use. Finish from Accounts instead: find them and press "Add membership".`
+          : authErrorMessage(error)
+      );
     }
+  };
+
+  /**
+   * react-hook-form's second callback. Field errors render at their own inputs, which on this
+   * form are a full screen above the button — so a rejected phone number read as a dead button.
+   * This puts a pointer next to the thing that was pressed.
+   */
+  const onInvalid = () => {
+    setPlanError(!selectedPlan);
+    setFormError('Some details need fixing — check the fields marked in red above.');
   };
 
   /*
@@ -260,7 +368,11 @@ export default function NewMember() {
               onBlur={onBlur}
               onChangeText={onChange}
               error={errors.email?.message}
-              hint="Expiry reminders go to this address."
+              hint={
+                needsCredentials
+                  ? 'Must be a real address they can open — they have to click a verification link before their first sign-in.'
+                  : 'Expiry reminders go to this address.'
+              }
             />
           )}
         />
@@ -283,6 +395,78 @@ export default function NewMember() {
         />
       </Card>
 
+      {needsCredentials ? (
+        <Card style={{ gap: Spacing.lg }}>
+          <View style={{ gap: Spacing.xs }}>
+            <Text style={[styles.sectionTitle, { color: text }]}>Sign-in credentials</Text>
+            <Text style={{ color: muted, fontSize: FontSize.sm }}>
+              Creates the member's login. Hand these over at the desk — they sign in with the
+              username or their email.
+            </Text>
+          </View>
+
+          <Controller
+            control={control}
+            name="username"
+            render={({ field: { onChange, onBlur, value } }) => (
+              <Input
+                label="Username"
+                placeholder="juan.delacruz"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={value}
+                onBlur={onBlur}
+                onChangeText={onChange}
+                error={errors.username?.message}
+                hint={USERNAME_HINT}
+              />
+            )}
+          />
+
+          <Controller
+            control={control}
+            name="password"
+            render={({ field: { onChange, onBlur, value } }) => (
+              <Input
+                label="Password"
+                placeholder="••••••••"
+                secureTextEntry
+                autoCapitalize="none"
+                autoComplete="new-password"
+                value={value}
+                onBlur={onBlur}
+                onChangeText={onChange}
+                error={errors.password?.message}
+                hint={`At least ${MIN_PASSWORD} characters. Ask them to change it after signing in.`}
+              />
+            )}
+          />
+
+          <Controller
+            control={control}
+            name="confirmPassword"
+            render={({ field: { onChange, onBlur, value } }) => (
+              <Input
+                label="Confirm password"
+                placeholder="••••••••"
+                secureTextEntry
+                autoCapitalize="none"
+                autoComplete="new-password"
+                value={value}
+                onBlur={onBlur}
+                onChangeText={onChange}
+                error={errors.confirmPassword?.message}
+              />
+            )}
+          />
+
+          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+            A verification email goes out automatically. The member has to click that link before
+            their first sign-in — until then they see the verification screen, not their dashboard.
+          </Text>
+        </Card>
+      ) : null}
+
       <Card style={{ gap: Spacing.md }}>
         <Text style={[styles.sectionTitle, { color: text }]}>Plan</Text>
         {plans.map((plan) => {
@@ -290,12 +474,16 @@ export default function NewMember() {
           return (
             <Pressable
               key={plan.id}
-              onPress={() => setPlanId(plan.id)}
+              onPress={() => {
+                setPlanId(plan.id);
+                setPlanError(false);
+                setFormError(null);
+              }}
               style={[
                 styles.planOption,
                 {
                   backgroundColor: selected ? brandMuted : surface,
-                  borderColor: selected ? brand : border,
+                  borderColor: selected ? brand : planError ? danger : border,
                 },
               ]}>
               <View style={{ flex: 1, gap: 2 }}>
@@ -310,6 +498,11 @@ export default function NewMember() {
             </Pressable>
           );
         })}
+        {planError ? (
+          <Text style={{ color: danger, fontSize: FontSize.sm }}>
+            Pick a plan — a membership can't be created without one.
+          </Text>
+        ) : null}
         {term ? (
           <Text style={{ color: muted, fontSize: FontSize.sm }}>
             Term: {formatDate(term.start)} — {formatDate(term.end)}
@@ -383,7 +576,11 @@ export default function NewMember() {
 
       {formError ? <Text style={{ color: danger }}>{formError}</Text> : null}
 
-      <Button title="Create member" loading={isSubmitting} onPress={handleSubmit(onSubmit)} />
+      <Button
+        title="Create member"
+        loading={isSubmitting}
+        onPress={handleSubmit(onSubmit, onInvalid)}
+      />
     </Screen>
   );
 }

@@ -13,11 +13,19 @@ import { useAuth } from '@/context/AuthContext';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/Theme';
 import { authErrorMessage } from '@/lib/authErrors';
 import { db } from '@/lib/firebase';
-import { createCheckIn } from '@/lib/firestore';
+import { createCheckIn, createNonMemberCheckIn, upsertNonMember } from '@/lib/firestore';
 import { daysUntil, formatDate, membershipTone } from '@/lib/format';
+import { parsePass, passDisplayName } from '@/lib/nonMembers';
 import type { Member } from '@/types/models';
 
-type Result = { member: Member; ok: boolean; reason?: string };
+/**
+ * Two outcomes because the two kinds of pass answer different questions. A member scan is an
+ * entitlement check that can fail — expired, frozen, cancelled. A walk-in scan cannot: there is
+ * no membership to be lapsed, so logging the visit is the whole operation.
+ */
+type Result =
+  | { kind: 'member'; member: Member; ok: boolean; reason?: string }
+  | { kind: 'nonmember'; name: string };
 
 export default function Scan() {
   const { user, isStaff } = useAuth();
@@ -42,31 +50,36 @@ export default function Scan() {
       setError(null);
 
       try {
-        let memberId: string | null = null;
-        try {
-          const parsed = JSON.parse(raw) as { t?: string; memberId?: string };
-          if (parsed.t === 'hardcore-gym' && parsed.memberId) memberId = parsed.memberId;
-        } catch {
-          memberId = null;
-        }
-        if (!memberId) throw new Error('That QR code is not a Hardcore Gym member pass.');
+        const pass = parsePass(raw);
+        if (!pass) throw new Error('That QR code is not a Hardcore Gym pass.');
 
-        const snap = await getDoc(doc(db, 'members', memberId));
+        if (pass.kind === 'nonmember') {
+          const name = passDisplayName(pass.nonMember);
+          // The visitor's device could not write this — it has no auth session — so the staff
+          // client creates the record here. Merging on their pass id means a repeat visitor
+          // bumps their own counter instead of appearing as a second person.
+          await upsertNonMember(pass.nonMember);
+          await createNonMemberCheckIn(pass.nonMember.id, name, user?.uid ?? 'unknown');
+          setResult({ kind: 'nonmember', name });
+          return;
+        }
+
+        const snap = await getDoc(doc(db, 'members', pass.memberId));
         if (!snap.exists()) throw new Error('Member not found.');
         const member = { id: snap.id, ...snap.data() } as Member;
 
         const days = daysUntil(member.endDate);
         if (member.status !== 'active') {
-          setResult({ member, ok: false, reason: `Membership is ${member.status}.` });
+          setResult({ kind: 'member', member, ok: false, reason: `Membership is ${member.status}.` });
           return;
         }
         if (days !== null && days < 0) {
-          setResult({ member, ok: false, reason: 'Membership has expired.' });
+          setResult({ kind: 'member', member, ok: false, reason: 'Membership has expired.' });
           return;
         }
 
         await createCheckIn(member.id, member.fullName, user?.uid ?? 'unknown');
-        setResult({ member, ok: true });
+        setResult({ kind: 'member', member, ok: true });
       } catch (err) {
         setError(authErrorMessage(err));
       } finally {
@@ -86,7 +99,7 @@ export default function Scan() {
     return (
       <Screen>
         <Card>
-          <Text style={{ color: text }}>Only staff can scan member passes.</Text>
+          <Text style={{ color: text }}>Only staff can scan gym passes.</Text>
         </Card>
       </Screen>
     );
@@ -110,7 +123,24 @@ export default function Scan() {
 
   return (
     <Screen>
-      {result ? (
+      {result?.kind === 'nonmember' ? (
+        <Card style={{ gap: Spacing.md }}>
+          <Text style={[styles.resultTitle, { color: success }]}>Walk-in logged</Text>
+          <Text style={[styles.memberName, { color: text }]}>{result.name}</Text>
+          <View style={styles.metaRow}>
+            <Badge label="Non-member" tone="neutral" />
+            <Text style={{ color: muted, fontSize: FontSize.sm }}>
+              Recorded in the attendance log. No membership is attached to this pass.
+            </Text>
+          </View>
+          <Button title="Scan next pass" onPress={scanAgain} />
+          <Button
+            title="View attendance"
+            variant="secondary"
+            onPress={() => router.replace('/(admin)/attendance')}
+          />
+        </Card>
+      ) : result ? (
         <Card style={{ gap: Spacing.md }}>
           <Text
             style={[styles.resultTitle, { color: result.ok ? success : danger }]}>
@@ -145,7 +175,7 @@ export default function Scan() {
             />
           </View>
           <Text style={{ color: muted, textAlign: 'center' }}>
-            {busy ? 'Checking…' : 'Point the camera at the member&apos;s QR code.'}
+            {busy ? 'Checking…' : 'Point the camera at a member or walk-in QR pass.'}
           </Text>
           {error ? (
             <Card style={{ gap: Spacing.md }}>

@@ -104,9 +104,26 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Check-ins: members read their own; staff create them (QR scanner).
+    // Walk-ins. Staff-only in both directions, which is the whole reason the visitor's own
+    // device never writes here: an unauthenticated phone would need `allow create: if true`,
+    // and a world-writable collection is a far worse trade than accepting that the name inside
+    // a scanned pass is self-asserted. The staff client creates the doc when it scans the QR.
+    match /nonMembers/{nonMemberId} {
+      allow read, write: if isStaff();
+    }
+
+    // Check-ins: members read their own; staff create them (QR scanner) and read the lot for
+    // the attendance log.
+    //
+    // The `kind` guard is load-bearing, not defensive styling. `ownsMember` does a `get()` on
+    // members/{memberId}, and a walk-in row carries `memberId: null` — evaluating that path
+    // *errors* the rule rather than merely failing it, which would take the member's own
+    // check-in list down with it. `.get('kind','member')` also defaults rows written before
+    // walk-ins existed, all of which were members.
     match /checkins/{checkinId} {
-      allow read: if isStaff() || ownsMember(resource.data.memberId);
+      allow read: if isStaff()
+                  || (resource.data.get('kind', 'member') == 'member'
+                      && ownsMember(resource.data.memberId));
       allow create: if isStaff();
       allow update, delete: if false;
     }

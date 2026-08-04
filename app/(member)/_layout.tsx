@@ -10,6 +10,10 @@ import Colors from '@/constants/Colors';
 export default function MemberLayout() {
   const colorScheme = useColorScheme();
   const { user, loading, emailVerified } = useAuth();
+  // Disable the static render of the header on web to prevent a hydration error in React
+  // Navigation v6. Called before the guards below because the web build of this hook holds
+  // state — reaching it only on non-redirecting renders changes the hook order.
+  const headerShown = useClientOnlyValue(false, true);
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Redirect href="/(auth)/sign-in" />;
@@ -26,9 +30,7 @@ export default function MemberLayout() {
         },
         headerStyle: { backgroundColor: Colors[colorScheme].card },
         headerTintColor: Colors[colorScheme].text,
-        // Disable the static render of the header on web
-        // to prevent a hydration error in React Navigation v6.
-        headerShown: useClientOnlyValue(false, true),
+        headerShown,
       }}>
       <Tabs.Screen
         name="index"

@@ -5,6 +5,7 @@ import { Formik } from 'formik';
 import { toFormikValidate } from 'zod-formik-adapter';
 import { z } from 'zod';
 
+import { NonMemberPassModal } from '@/components/NonMemberPassModal';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { FormikField } from '@/components/ui/FormikField';
@@ -33,6 +34,7 @@ export default function SignIn() {
   const brand = useThemeColor({}, 'brand');
   const danger = useThemeColor({}, 'danger');
   const [formError, setFormError] = useState<string | null>(null);
+  const [passOpen, setPassOpen] = useState(false);
 
   return (
     <KeyboardAvoidingView
@@ -93,13 +95,24 @@ export default function SignIn() {
           )}
         </Formik>
 
+        {/*
+          Public sign-up is retired — the gym issues member credentials at the front desk, so
+          there is no self-service path to an account any more. What replaces it is the walk-in
+          pass: a name, a QR, and no account at all.
+        */}
         <View style={styles.footer}>
-          <Text style={{ color: muted }}>New here? </Text>
-          <Link href="/(auth)/sign-up" style={[styles.link, { color: brand }]}>
-            Create an account
-          </Link>
+          <Text style={{ color: muted, textAlign: 'center', fontSize: FontSize.sm }}>
+            No membership yet? Get a QR pass for today's visit.
+          </Text>
+          <Button
+            title="Continue as a non-member"
+            variant="ghost"
+            onPress={() => setPassOpen(true)}
+          />
         </View>
       </View>
+
+      <NonMemberPassModal visible={passOpen} onClose={() => setPassOpen(false)} />
     </KeyboardAvoidingView>
   );
 }
@@ -122,5 +135,5 @@ const styles = StyleSheet.create({
   card: { gap: Spacing.lg },
   error: { fontSize: FontSize.sm },
   link: { fontWeight: FontWeight.semibold, textAlign: 'center' },
-  footer: { flexDirection: 'row', justifyContent: 'center' },
+  footer: { gap: Spacing.md },
 });
