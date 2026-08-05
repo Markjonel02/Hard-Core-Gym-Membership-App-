@@ -138,6 +138,13 @@ export async function provisionMemberLogin(
           lastName: name.lastName,
           displayName,
           phone,
+          // Mirrored so the UI can render member tabs immediately. Not the authoritative copy:
+          // firestore.rules reads the role off the *token*, and the create rule only permits
+          // 'member' here, so this cannot self-promote. The token's claim is normally stamped by
+          // the onUserCreate trigger, which is undeployed — hence the matching default in
+          // `role()` in firestore.rules, without which this account could not read its own
+          // membership at all.
+          role: 'member',
           emailOptIn: true,
           createdAt: serverTimestamp(),
         },

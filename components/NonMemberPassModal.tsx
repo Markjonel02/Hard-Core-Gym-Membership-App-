@@ -19,15 +19,42 @@ import {
   type NonMemberPassIdentity,
 } from '@/lib/nonMembers';
 
+/**
+ * `fee` is a string because that is what a `TextInput` gives back, and because the empty string
+ * has to stay distinguishable from zero: blank means "not priced yet" and shows the default,
+ * while an explicit `0` is a comp the desk chose to give. Parsed to cents on submit.
+ *
+ * It is validated only in `desk` mode — a visitor minting their own pass is not paying anything
+ * yet, so requiring a number from them would block the QR they came for.
+ */
 const schema = z.object({
   firstName: z.string().trim().min(1, 'First name is required'),
   middleName: z.string().trim().optional(),
   lastName: z.string().trim().min(1, 'Last name is required'),
+  fee: z
+    .string()
+    .trim()
+    .optional()
+    .refine((raw) => !raw || Number.isFinite(Number(raw)), 'Enter an amount like 150')
+    .refine((raw) => !raw || Number(raw) >= 0, 'Amount cannot be negative'),
 });
 
 type FormValues = z.infer<typeof schema>;
 
-const EMPTY: FormValues = { firstName: '', middleName: '', lastName: '' };
+const EMPTY: FormValues = { firstName: '', middleName: '', lastName: '', fee: '' };
+
+/**
+ * Pesos as typed → integer centavos, matching every other amount in the payments collection.
+ *
+ * Blank is not zero: an empty field means the desk did not price the visit and the default
+ * applies, while a typed `0` is a deliberate comp. `Number('')` is 0, so the blank case has to
+ * be caught before parsing or every unpriced walk-in would silently comp itself.
+ */
+function toCents(raw: string | undefined, fallbackPesos: number): number {
+  const trimmed = (raw ?? '').trim();
+  const pesos = trimmed === '' ? fallbackPesos : Number(trimmed);
+  return Number.isFinite(pesos) ? Math.round(pesos * 100) : 0;
+}
 
 type Props = {
   visible: boolean;
@@ -38,8 +65,13 @@ type Props = {
    *           and never persist anything on the shared front-desk device.
    */
   mode?: 'pass' | 'desk';
-  /** Required in `desk` mode. Writes the nonMembers doc and the attendance row. */
-  onRegister?: (identity: Required<NonMemberPassIdentity>) => Promise<void>;
+  /**
+   * Required in `desk` mode. Writes the nonMembers doc, the attendance row, and the payment when
+   * a fee is charged.
+   */
+  onRegister?: (identity: Required<NonMemberPassIdentity>, amountCents: number) => Promise<void>;
+  /** Default walk-in fee in pesos, prefilled in the amount field. Editable so a visit can be comped. */
+  defaultFeePesos?: number;
 };
 
 /**
@@ -53,7 +85,13 @@ type Props = {
  * In `pass` mode nothing is written to Firestore. The visitor has no auth session, so the QR is
  * the entire artifact — the `nonMembers` document is created by staff when it gets scanned.
  */
-export function NonMemberPassModal({ visible, onClose, mode = 'pass', onRegister }: Props) {
+export function NonMemberPassModal({
+  visible,
+  onClose,
+  mode = 'pass',
+  onRegister,
+  defaultFeePesos = 0,
+}: Props) {
   const [identity, setIdentity] = useState<Required<NonMemberPassIdentity> | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -83,7 +121,7 @@ export function NonMemberPassModal({ visible, onClose, mode = 'pass', onRegister
 
     if (mode === 'desk') {
       setIdentity(null);
-      reset(EMPTY);
+      reset({ ...EMPTY, fee: String(defaultFeePesos || '') });
       return;
     }
 
@@ -95,12 +133,13 @@ export function NonMemberPassModal({ visible, onClose, mode = 'pass', onRegister
         firstName: saved.firstName,
         middleName: saved.middleName ?? '',
         lastName: saved.lastName,
+        fee: '',
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [visible, mode, reset]);
+  }, [visible, mode, defaultFeePesos, reset]);
 
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
@@ -115,7 +154,8 @@ export function NonMemberPassModal({ visible, onClose, mode = 'pass', onRegister
 
     if (mode === 'desk') {
       try {
-        await onRegister?.(next);
+        const amountCents = toCents(values.fee, defaultFeePesos);
+        await onRegister?.(next, amountCents);
         onClose();
       } catch (error) {
         console.error('[nonmember] desk registration failed', error);
@@ -225,11 +265,32 @@ export function NonMemberPassModal({ visible, onClose, mode = 'pass', onRegister
                       onBlur={onBlur}
                       onChangeText={onChange}
                       error={errors.lastName?.message}
-                      returnKeyType="go"
-                      onSubmitEditing={handleSubmit(onSubmit)}
+                      returnKeyType={mode === 'desk' ? 'next' : 'go'}
+                      onSubmitEditing={mode === 'desk' ? undefined : handleSubmit(onSubmit)}
                     />
                   )}
                 />
+
+                {mode === 'desk' ? (
+                  <Controller
+                    control={control}
+                    name="fee"
+                    render={({ field: { onChange, onBlur, value } }) => (
+                      <Input
+                        label="Day-pass fee (₱)"
+                        placeholder={String(defaultFeePesos || 0)}
+                        keyboardType="decimal-pad"
+                        value={value}
+                        onBlur={onBlur}
+                        onChangeText={onChange}
+                        error={errors.fee?.message}
+                        hint="Leave blank to use the default. Enter 0 to comp the visit."
+                        returnKeyType="go"
+                        onSubmitEditing={handleSubmit(onSubmit)}
+                      />
+                    )}
+                  />
+                ) : null}
 
                 {formError ? (
                   <Text style={{ color: danger, fontSize: FontSize.sm }}>{formError}</Text>

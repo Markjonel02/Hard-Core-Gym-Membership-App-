@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { httpsCallable } from 'firebase/functions';
+import QRCode from 'react-native-qrcode-svg';
 
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -25,6 +26,7 @@ import {
   membershipTone,
 } from '@/lib/format';
 import { nextTermFor } from '@/lib/membership';
+import { buildMemberPass } from '@/lib/nonMembers';
 
 export default function MemberDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -153,6 +155,22 @@ export default function MemberDetail() {
 
       {message ? <Text style={{ color: success }}>{message}</Text> : null}
       {error ? <Text style={{ color: danger }}>{error}</Text> : null}
+
+      {/*
+        The member's own pass, rendered here so the desk can scan or print it for someone who
+        has not installed the app or cannot get to their phone. It is the same code the member
+        sees — `member.id` never changes — so a printed copy stays valid for the life of the
+        membership and there is nothing to reissue on renewal.
+      */}
+      <Card style={styles.qrCard}>
+        <Text style={[styles.sectionTitle, { color: text }]}>Check-in QR</Text>
+        <View style={[styles.qrFrame, { borderColor: border }]}>
+          <QRCode value={buildMemberPass(member.id)} size={180} backgroundColor="#ffffff" color="#000000" />
+        </View>
+        <Text style={{ color: muted, fontSize: FontSize.sm, textAlign: 'center' }}>
+          Permanent code for {member.fullName}. Safe to print or screenshot.
+        </Text>
+      </Card>
 
       <Card style={{ gap: Spacing.md }}>
         <Text style={[styles.sectionTitle, { color: text }]}>Membership</Text>
@@ -384,6 +402,15 @@ const styles = StyleSheet.create({
   initials: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   name: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  qrCard: { alignItems: 'center', gap: Spacing.md },
+  // White plate behind the code so it stays scannable in dark mode, matching the member's own
+  // check-in screen — a QR rendered on a dark surface is not reliably readable.
+  qrFrame: {
+    padding: Spacing.lg,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

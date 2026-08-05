@@ -29,6 +29,13 @@ export interface UserDoc {
   role: Role;
   pushToken?: string | null;
   emailOptIn: boolean;
+  /**
+   * Hidden from the Accounts list. Deliberately *not* a deletion: the Auth credential lives
+   * outside Firestore and only the Admin SDK can remove it, so a hard delete would leave a
+   * working login pointing at nothing. Absent on every account written before archiving
+   * existed, which is why every read treats missing as `false`.
+   */
+  archived?: boolean;
   createdAt: Timestamp;
 }
 
@@ -73,6 +80,8 @@ export interface Member {
   status: MemberStatus;
   emergencyContact?: EmergencyContact;
   notes?: string;
+  /** See `UserDoc.archived`. Set alongside `status: 'cancelled'`, and reversible. */
+  archived?: boolean;
   joinedAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -89,14 +98,27 @@ export interface Plan {
 
 export interface Payment {
   id: string;
-  memberId: string;
+  /**
+   * Null for a walk-in fee, which is charged to a person with no membership at all. Reading
+   * this defensively matters beyond typing: `ownsMember()` in firestore.rules does a `get()` on
+   * `members/{memberId}`, and a null id would *error* rule evaluation rather than merely fail
+   * it — taking a member's whole receipt list down with it. Hence the `kind` guard on that rule.
+   */
+  memberId: string | null;
   memberName: string;
   planId: string;
   planName: string;
   amountCents: number;
   method: PaymentMethod;
-  /** 'new' on first purchase, 'renewal' on every subsequent one. Drives the admin new-vs-renewal chart. */
-  kind: 'new' | 'renewal';
+  /**
+   * 'new' on first purchase, 'renewal' on every subsequent one — together they drive the admin
+   * new-vs-renewal chart. 'walkin' is a day-pass fee: no plan, no member, but real money, so it
+   * lives here rather than in its own collection. One sum over `payments` is then the whole
+   * revenue figure, and the CSV export needs no second source.
+   */
+  kind: 'new' | 'renewal' | 'walkin';
+  /** Set only on a walk-in fee, linking it back to the `nonMembers` row that was scanned. */
+  nonMemberId?: string | null;
   paidAt: Timestamp;
   periodStart: Timestamp;
   periodEnd: Timestamp;
@@ -176,4 +198,17 @@ export interface Announcement {
   active: boolean;
   createdAt: Timestamp;
   createdBy: string;
+}
+
+/**
+ * `settings/pricing` — the default day-pass fee, in centavos.
+ *
+ * A single stored number rather than a constant in the source, because the front desk changes
+ * prices more often than the app ships. It is only a *default*: the walk-in form leaves the
+ * amount editable so a visit can be comped or priced differently on the spot.
+ */
+export interface PricingSettings {
+  walkInCents: number;
+  updatedAt?: Timestamp;
+  updatedBy?: string;
 }

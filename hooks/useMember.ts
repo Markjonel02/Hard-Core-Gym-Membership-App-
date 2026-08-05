@@ -4,6 +4,7 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '@/context/AuthContext';
 import { useCollection } from '@/hooks/useCollection';
 import { db } from '@/lib/firebase';
+import { partitionArchived } from '@/lib/archive';
 import { q } from '@/lib/firestore';
 import { daysUntil, sortByDateDesc, toDate } from '@/lib/format';
 import type { CheckIn, Member, Payment, Plan } from '@/types/models';
@@ -82,9 +83,25 @@ export function useAllPlans() {
   return { data: sorted, loading, error };
 }
 
+/**
+ * Every membership, archived ones included.
+ *
+ * Deliberately unfiltered, because the two current callers need opposite things: the Accounts
+ * screen shows archived rows behind a filter chip, and `usePendingAccounts` must count an
+ * archived membership as a link — otherwise archiving someone would resurrect them in the
+ * "pending membership" list as though they had never been sold anything. Screens that want only
+ * live rows use `partitionArchived` from `lib/archive.ts`.
+ */
 export function useAllMembers() {
   const membersQuery = useMemo(() => q.allMembers(), []);
   return useCollection<Member>(membersQuery);
+}
+
+/** Live memberships only — the default roster view. */
+export function useActiveRoster() {
+  const { data, loading, error } = useAllMembers();
+  const split = useMemo(() => partitionArchived(data), [data]);
+  return { data: split.active, archived: split.archived, loading, error };
 }
 
 /** Single member for the admin detail screen. */

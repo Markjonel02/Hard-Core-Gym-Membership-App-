@@ -15,9 +15,9 @@ import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { useCollection } from '@/hooks/useCollection';
 import {
   useActiveMembers,
-  useCurrentMonthRevenue,
   useExpiringMembers,
   useMonthlyStats,
+  useRevenueByMonth,
   useTodayCheckins,
 } from '@/hooks/useStats';
 import { usePendingAccounts } from '@/hooks/useUsers';
@@ -35,8 +35,8 @@ import { memberDisplayName } from '@/lib/names';
 import type { Payment } from '@/types/models';
 
 export default function AdminSales() {
-  const { series, thisMonth, lastMonth, loading, error: statsError } = useMonthlyStats(12);
-  const { revenueCents: revenueThisMonth } = useCurrentMonthRevenue();
+  const { series: revenueByMonth, thisMonth, lastMonth, loading, error: revenueError } = useRevenueByMonth(12);
+  const { series: checkinStats, loading: statsLoading, error: statsError } = useMonthlyStats(12);
   const { data: activeMembers, error: membersError } = useActiveMembers();
   const { data: expiring } = useExpiringMembers(90);
   const { data: todayCheckins } = useTodayCheckins();
@@ -63,18 +63,18 @@ export default function AdminSales() {
   const chartWidth = Math.min(width, 900) - Spacing.lg * 4;
 
   const revenueData = useMemo(
-    () => series.map((row) => ({ value: row.revenueCents / 100, label: row.label })),
-    [series]
+    () => revenueByMonth.map((row) => ({ value: row.revenueCents / 100, label: row.label })),
+    [revenueByMonth]
   );
 
   // Grouped new-vs-renewal bars: two adjacent bars per month, spacing separates the pairs.
   const acquisitionData = useMemo(
     () =>
-      series.flatMap((row) => [
+      checkinStats.flatMap((row) => [
         { value: row.newMembers, label: row.label, frontColor: brand, spacing: 2 },
         { value: row.renewals, frontColor: success },
       ]),
-    [series, brand, success]
+    [checkinStats, brand, success]
   );
 
   const momDelta = useMemo(() => {
@@ -94,13 +94,13 @@ export default function AdminSales() {
         a broken read. Saying so up front is the difference between "no sales yet" and
         "this dashboard is not seeing the database".
       */}
-      {membersError || statsError ? (
+      {membersError || statsError || revenueError ? (
         <Card style={{ gap: Spacing.xs, borderColor: danger, borderWidth: 1 }}>
           <Text style={{ color: danger, fontWeight: FontWeight.semibold }}>
             Some figures below could not load
           </Text>
           <Text style={{ color: muted, fontSize: FontSize.sm }}>
-            {(membersError ?? statsError)?.message}
+            {(membersError ?? statsError ?? revenueError)?.message}
           </Text>
           <Text style={{ color: muted, fontSize: FontSize.sm }}>
             Tiles showing 0 may be a permissions or connection problem, not an empty database.
@@ -111,7 +111,7 @@ export default function AdminSales() {
       <View style={styles.tiles}>
         <StatTile
           label="Revenue this month"
-          value={formatCompactCurrency(revenueThisMonth)}
+          value={formatCompactCurrency(thisMonth?.revenueCents ?? 0)}
           delta={momDelta}
           tone="brand"
         />

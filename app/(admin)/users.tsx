@@ -3,31 +3,36 @@ import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 import { router } from 'expo-router';
 import { httpsCallable } from 'firebase/functions';
 
+import { EditAccountModal } from '@/components/admin/EditAccountModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/Input';
+import { OverflowMenu, type OverflowMenuItem } from '@/components/ui/OverflowMenu';
 import { Screen } from '@/components/ui/Screen';
 import { SkeletonList } from '@/components/ui/Skeleton';
 import { useThemeColor } from '@/components/Themed';
 import { useAuth } from '@/context/AuthContext';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/Theme';
 import { useAllMembers } from '@/hooks/useMember';
-import { useAllUsers } from '@/hooks/useUsers';
-import { authErrorMessage } from '@/lib/authErrors';
+import { useVisibleUsers } from '@/hooks/useUsers';
+import { authErrorMessage, isFunctionMissing } from '@/lib/authErrors';
+import { archiveMember, restoreMember, upsertUserProfile } from '@/lib/firestore';
 import { functions } from '@/lib/firebase';
 import { formatDate, initialsOf } from '@/lib/format';
 import { memberDisplayName } from '@/lib/names';
-import type { Role, UserDoc } from '@/types/models';
+import { makeAdminCommand, MAKE_ADMIN_AFTER, MAKE_ADMIN_HINT } from '@/lib/roleFallback';
+import type { Member, Role, UserDoc } from '@/types/models';
 
-type Filter = 'all' | 'pending' | 'members' | 'team';
+type Filter = 'all' | 'pending' | 'members' | 'team' | 'archived';
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'pending', label: 'No membership' },
   { key: 'members', label: 'Members' },
   { key: 'team', label: 'Staff & admins' },
+  { key: 'archived', label: 'Archived' },
 ];
 
 const ROLE_TONES: Record<Role, 'brand' | 'success' | 'neutral'> = {
@@ -46,7 +51,7 @@ const ROLE_TONES: Record<Role, 'brand' | 'success' | 'neutral'> = {
  */
 export default function AdminUsers() {
   const { user: currentUser, role: myRole } = useAuth();
-  const { data: users, loading, error } = useAllUsers();
+  const { data: users, archived, loading, error } = useVisibleUsers();
   const { data: members } = useAllMembers();
 
   const [search, setSearch] = useState('');
@@ -55,6 +60,16 @@ export default function AdminUsers() {
   const [busy, setBusy] = useState<{ uid: string; role: Role } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** Selected uids for the bulk bar. A Set because the only questions asked are has/add/remove. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [editing, setEditing] = useState<UserDoc | null>(null);
+  /**
+   * The terminal fallback, shown only after the callable has actually been tried and answered
+   * "not deployed". Holding the lines in state rather than deriving them keeps the block tied to
+   * the attempt the admin just made, so it does not reappear on the next render for a different row.
+   */
+  const [fallback, setFallback] = useState<{ commands: string; count: number } | null>(null);
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -91,9 +106,11 @@ export default function AdminUsers() {
     return email ? membershipByEmail.get(email) ?? null : null;
   };
 
+  const source = filter === 'archived' ? archived : users;
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return users.filter((account) => {
+    return source.filter((account) => {
       if (needle) {
         const haystack = [account.email, account.username, memberDisplayName(account)]
           .filter(Boolean)
@@ -106,14 +123,16 @@ export default function AdminUsers() {
       if (filter === 'team') return role === 'staff' || role === 'admin';
       if (filter === 'members') return Boolean(membership);
       if (filter === 'pending') return role === 'member' && !membership;
+      if (filter === 'archived') return true;
       return true;
     });
     // linkedMembership closes over the two maps, which are the real dependencies.
-  }, [users, search, filter, membershipByUid, membershipByEmail]);
+  }, [source, search, filter, membershipByUid, membershipByEmail]);
 
   const changeRole = async (account: UserDoc, nextRole: Role) => {
     setActionError(null);
     setMessage(null);
+    setFallback(null);
     setBusy({ uid: account.uid, role: nextRole });
     try {
       const call = httpsCallable(functions, 'setRole');
@@ -122,7 +141,16 @@ export default function AdminUsers() {
         `${memberDisplayName(account)} is now ${nextRole}. The change applies the next time they sign in.`
       );
     } catch (err) {
-      setActionError(authErrorMessage(err));
+      /*
+       * A missing deployment is not an error the admin can act on, so it is answered with the
+       * command that does the same job instead of a sentence naming a fix they cannot perform.
+       * A genuine rejection — self-demotion, unknown address — still shows the server's own message.
+       */
+      if (isFunctionMissing(err) && account.email) {
+        setFallback({ commands: makeAdminCommand(account.email, nextRole), count: 1 });
+      } else {
+        setActionError(authErrorMessage(err));
+      }
     } finally {
       setBusy(null);
     }
@@ -149,6 +177,177 @@ export default function AdminUsers() {
     ]);
   };
 
+  const confirmArchive = (account: UserDoc) => {
+    const name = memberDisplayName(account);
+    const membership = linkedMembership(account);
+    const prompt = membership
+      ? `Archive ${name}? Their membership will be cancelled and hidden from the roster. Payment and attendance history is kept. Their sign-in credentials stay active — removing those needs the Firebase console.`
+      : `Archive ${name}'s account? They will be hidden from this list. Their sign-in credentials stay active — removing those needs the Firebase console.`;
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(prompt)) void doArchive(account);
+      return;
+    }
+    Alert.alert('Archive account', prompt, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Archive', style: 'destructive', onPress: () => void doArchive(account) },
+    ]);
+  };
+
+  const doArchive = async (account: UserDoc) => {
+    const membership = linkedMembership(account);
+    setActionError(null);
+    setMessage(null);
+    try {
+      if (membership) await archiveMember(membership.id);
+      if (account.uid) await upsertUserProfile(account.uid, { archived: true });
+      setMessage(`Archived ${memberDisplayName(account)}.`);
+      setSelected(new Set());
+    } catch (err) {
+      console.error('[accounts] archive failed', err);
+      setActionError(authErrorMessage(err));
+    }
+  };
+
+  const confirmBulkArchive = () => {
+    const count = selected.size;
+    const prompt = `Archive ${count} account${count === 1 ? '' : 's'}? Memberships are cancelled and hidden. Payment and attendance history is kept. Sign-in credentials stay active.`;
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(prompt)) void doBulkArchive();
+      return;
+    }
+    Alert.alert('Archive accounts', prompt, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Archive', style: 'destructive', onPress: () => void doBulkArchive() },
+    ]);
+  };
+
+  const doBulkArchive = async () => {
+    setActionError(null);
+    setMessage(null);
+    setBulkBusy(true);
+    const failures: string[] = [];
+
+    for (const uid of selected) {
+      const account = users.find((u) => u.uid === uid) ?? archived.find((u) => u.uid === uid);
+      if (!account) continue;
+      const membership = linkedMembership(account);
+      try {
+        if (membership) await archiveMember(membership.id);
+        if (account.uid) await upsertUserProfile(account.uid, { archived: true });
+      } catch (err) {
+        console.error('[accounts] bulk archive failed for', account.email, err);
+        failures.push(memberDisplayName(account));
+      }
+    }
+
+    setBulkBusy(false);
+    if (failures.length === 0) {
+      setMessage(`Archived ${selected.size} account${selected.size === 1 ? '' : 's'}.`);
+    } else {
+      setActionError(`Archived ${selected.size - failures.length}, failed for: ${failures.join(', ')}`);
+    }
+    setSelected(new Set());
+  };
+
+  const doBulkPromote = async (role: Role) => {
+    setActionError(null);
+    setMessage(null);
+    setFallback(null);
+    setBulkBusy(true);
+
+    const entries = Array.from(selected)
+      .map((uid) => users.find((u) => u.uid === uid))
+      .filter((account): account is UserDoc => Boolean(account?.email));
+
+    const failures: string[] = [];
+    let missing = false;
+
+    for (const account of entries) {
+      try {
+        const call = httpsCallable(functions, 'setRole');
+        await call({ uid: account.uid, role });
+      } catch (err) {
+        if (isFunctionMissing(err)) {
+          missing = true;
+          break;
+        }
+        console.error('[accounts] bulk promote failed for', account.email, err);
+        failures.push(memberDisplayName(account));
+      }
+    }
+
+    setBulkBusy(false);
+
+    if (missing) {
+      const commands = entries.map((a) => makeAdminCommand(a.email!, role)).join('\n');
+      setFallback({ commands, count: entries.length });
+      return;
+    }
+
+    if (failures.length === 0) {
+      setMessage(
+        `Promoted ${entries.length} account${entries.length === 1 ? '' : 's'} to ${role}. Changes apply on next sign-in.`
+      );
+    } else {
+      setActionError(`Promoted ${entries.length - failures.length}, failed for: ${failures.join(', ')}`);
+    }
+    setSelected(new Set());
+  };
+
+  const confirmBulkPromote = (role: Role) => {
+    const count = selected.size;
+    const prompt = `Give ${count} account${count === 1 ? '' : 's'} ${role} access to the admin dashboard?`;
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(prompt)) void doBulkPromote(role);
+      return;
+    }
+    Alert.alert('Change role', prompt, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Confirm', onPress: () => void doBulkPromote(role) },
+    ]);
+  };
+
+  const doRestore = async (account: UserDoc) => {
+    const membership = linkedMembership(account);
+    setActionError(null);
+    setMessage(null);
+    try {
+      if (membership) await restoreMember(membership.id);
+      if (account.uid) await upsertUserProfile(account.uid, { archived: false });
+      setMessage(
+        `Restored ${memberDisplayName(account)}.${
+          membership ? ' Their membership is still cancelled — renew it to grant access.' : ''
+        }`
+      );
+      setSelected(new Set());
+    } catch (err) {
+      console.error('[accounts] restore failed', err);
+      setActionError(authErrorMessage(err));
+    }
+  };
+
+  const toggleSelection = (uid: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selected.size === filtered.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filtered.map((a) => a.uid)));
+    }
+  };
+
+  const allSelected = filtered.length > 0 && selected.size === filtered.length;
+
   return (
     <Screen scroll={false}>
       <View style={styles.controls}>
@@ -164,7 +363,7 @@ export default function AdminUsers() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chips}>
           {FILTERS.map((item) => {
-            const selected = filter === item.key;
+            const isSelected = filter === item.key;
             return (
               <Pressable
                 key={item.key}
@@ -172,19 +371,77 @@ export default function AdminUsers() {
                 style={[
                   styles.chip,
                   {
-                    backgroundColor: selected ? brandMuted : surface,
-                    borderColor: selected ? brand : border,
+                    backgroundColor: isSelected ? brandMuted : surface,
+                    borderColor: isSelected ? brand : border,
                   },
                 ]}>
-                <Text style={[styles.chipLabel, { color: selected ? brand : muted }]}>
+                <Text style={[styles.chipLabel, { color: isSelected ? brand : muted }]}>
                   {item.label}
                 </Text>
               </Pressable>
             );
           })}
         </ScrollView>
+
+        {selected.size > 0 && myRole === 'admin' ? (
+          <View style={[styles.bulkBar, { backgroundColor: surface, borderColor: border }]}>
+            <Pressable onPress={toggleAll} style={styles.bulkCheckRow}>
+              <View
+                style={[
+                  styles.checkbox,
+                  {
+                    borderColor: allSelected ? brand : border,
+                    backgroundColor: allSelected ? brand : 'transparent',
+                  },
+                ]}>
+                {allSelected ? <Text style={styles.checkmark}>✓</Text> : null}
+              </View>
+              <Text style={{ color: text, fontSize: FontSize.sm }}>
+                {selected.size} selected
+              </Text>
+            </Pressable>
+            <View style={styles.bulkActions}>
+              <Button
+                title="Archive"
+                variant="ghost"
+                fullWidth={false}
+                loading={bulkBusy}
+                style={styles.bulkButton}
+                onPress={confirmBulkArchive}
+              />
+              <Button
+                title="Make staff"
+                variant="ghost"
+                fullWidth={false}
+                loading={bulkBusy}
+                style={styles.bulkButton}
+                onPress={() => confirmBulkPromote('staff')}
+              />
+              <Button
+                title="Make admin"
+                variant="ghost"
+                fullWidth={false}
+                loading={bulkBusy}
+                style={styles.bulkButton}
+                onPress={() => confirmBulkPromote('admin')}
+              />
+            </View>
+          </View>
+        ) : null}
+
         {message ? <Text style={{ color: success }}>{message}</Text> : null}
         {actionError ? <Text style={{ color: danger }}>{actionError}</Text> : null}
+        {fallback ? (
+          <View style={{ gap: Spacing.sm }}>
+            <Text style={{ color: muted, fontSize: FontSize.sm }}>{MAKE_ADMIN_HINT}</Text>
+            <View style={[styles.codeBlock, { backgroundColor: surface, borderColor: border }]}>
+              <Text style={[styles.code, { color: text }]} selectable>
+                {fallback.commands}
+              </Text>
+            </View>
+            <Text style={{ color: muted, fontSize: FontSize.sm }}>{MAKE_ADMIN_AFTER}</Text>
+          </View>
+        ) : null}
       </View>
 
       <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
@@ -215,10 +472,74 @@ export default function AdminUsers() {
             const membership = linkedMembership(account);
             const isSelf = account.uid === currentUser?.uid;
             const rowBusy = busy?.uid === account.uid;
+            const isSelected = selected.has(account.uid);
+            const isArchived = filter === 'archived';
+
+            const menuItems: OverflowMenuItem[] = [
+              {
+                label: 'View',
+                icon: { ios: 'eye', android: 'visibility', web: 'visibility' },
+                hint: membership ? 'Open member detail' : 'Add membership',
+                onPress: () => {
+                  if (membership) {
+                    router.push(`/(admin)/members/${membership.id}`);
+                  } else {
+                    router.push({
+                      pathname: '/(admin)/members/new',
+                      params: {
+                        uid: account.uid,
+                        email: account.email ?? '',
+                        firstName: account.firstName ?? '',
+                        middleName: account.middleName ?? '',
+                        lastName: account.lastName ?? '',
+                        phone: account.phone ?? '',
+                      },
+                    });
+                  }
+                },
+              },
+              {
+                label: 'Edit',
+                icon: { ios: 'pencil', android: 'edit', web: 'edit' },
+                hint: 'Update details',
+                onPress: () => setEditing(account),
+              },
+            ];
+
+            if (isArchived) {
+              menuItems.push({
+                label: 'Restore',
+                icon: { ios: 'arrow.uturn.backward', android: 'restore', web: 'restore' },
+                hint: 'Bring back to active',
+                onPress: () => doRestore(account),
+              });
+            } else {
+              menuItems.push({
+                label: 'Archive',
+                icon: { ios: 'archivebox', android: 'archive', web: 'archive' },
+                hint: 'Hide from roster',
+                destructive: true,
+                onPress: () => confirmArchive(account),
+              });
+            }
 
             return (
               <Card key={account.uid} style={{ gap: Spacing.md }}>
                 <View style={styles.row}>
+                  {myRole === 'admin' && !isArchived ? (
+                    <Pressable onPress={() => toggleSelection(account.uid)} hitSlop={8}>
+                      <View
+                        style={[
+                          styles.checkbox,
+                          {
+                            borderColor: isSelected ? brand : border,
+                            backgroundColor: isSelected ? brand : 'transparent',
+                          },
+                        ]}>
+                        {isSelected ? <Text style={styles.checkmark}>✓</Text> : null}
+                      </View>
+                    </Pressable>
+                  ) : null}
                   <View style={[styles.avatar, { backgroundColor: brandMuted }]}>
                     <Text style={[styles.initials, { color: brand }]}>{initialsOf(name)}</Text>
                   </View>
@@ -233,6 +554,12 @@ export default function AdminUsers() {
                     </Text>
                   </View>
                   <Badge label={role} tone={ROLE_TONES[role]} />
+                  <OverflowMenu
+                    variant="inline"
+                    title={name}
+                    items={menuItems}
+                    accessibilityLabel={`Actions for ${name}`}
+                  />
                 </View>
 
                 {membership ? (
@@ -298,6 +625,17 @@ export default function AdminUsers() {
           })
         )}
       </ScrollView>
+
+      <EditAccountModal
+        visible={Boolean(editing)}
+        onClose={() => setEditing(null)}
+        account={editing}
+        member={editing ? linkedMembership(editing) : null}
+        onSaved={(msg) => {
+          setMessage(msg);
+          setEditing(null);
+        }}
+      />
     </Screen>
   );
 }
@@ -312,8 +650,32 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   chipLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  bulkBar: {
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: Spacing.md,
+  },
+  bulkCheckRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  bulkActions: { flexDirection: 'row', gap: Spacing.sm },
+  bulkButton: { paddingHorizontal: Spacing.sm },
+  codeBlock: {
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  code: { fontSize: FontSize.sm, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   list: { padding: Spacing.lg, gap: Spacing.md },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkmark: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   avatar: {
     width: 44,
     height: 44,

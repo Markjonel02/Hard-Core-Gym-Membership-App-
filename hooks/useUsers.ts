@@ -2,21 +2,32 @@ import { useMemo } from 'react';
 
 import { useCollection } from '@/hooks/useCollection';
 import { useAllMembers } from '@/hooks/useMember';
+import { isArchived, partitionArchived } from '@/lib/archive';
 import { q } from '@/lib/firestore';
 import { memberDisplayName, sortByDisplayName } from '@/lib/names';
 import type { Member, Role, UserDoc } from '@/types/models';
 
 /**
- * Every registered account. Staff-only — see the `users` read rule in firestore.rules.
+ * Every registered account, archived ones included. Staff-only — see the `users` read rule.
  *
  * Sorted client-side because the query carries no orderBy: an account written before the name
  * fields existed would otherwise be excluded from the result entirely rather than sorted last.
+ *
+ * Archived rows are left in so the Accounts screen can offer them back under its Archived
+ * filter; callers wanting only live accounts use `useVisibleUsers` below.
  */
 export function useAllUsers() {
   const usersQuery = useMemo(() => q.allUsers(), []);
   const { data, loading, error } = useCollection<UserDoc>(usersQuery);
   const users = useMemo(() => sortByDisplayName(data), [data]);
   return { data: users, loading, error };
+}
+
+/** Live accounts and archived ones, split. The Accounts screen renders one or the other. */
+export function useVisibleUsers() {
+  const { data, loading, error } = useAllUsers();
+  const split = useMemo(() => partitionArchived(data), [data]);
+  return { data: split.active, archived: split.archived, loading, error };
 }
 
 export type PendingAccount = UserDoc & {
@@ -53,6 +64,9 @@ export function usePendingAccounts() {
 
     return users
       .filter((user) => {
+        // An archived account is not waiting to be sold anything — it was retired on purpose,
+        // and listing it here would invite staff to re-enrol someone they just removed.
+        if (isArchived(user)) return false;
         if (user.uid && linkedUids.has(user.uid)) return false;
         const email = user.email?.trim().toLowerCase();
         if (email && linkedEmails.has(email)) return false;
@@ -71,7 +85,7 @@ export function usePendingAccounts() {
 
 /** Accounts holding a staff or admin role, for the team list on the settings screen. */
 export function useTeamAccounts() {
-  const { data, loading, error } = useAllUsers();
+  const { data, loading, error } = useVisibleUsers();
   const team = useMemo(
     () => data.filter((user) => user.role === 'staff' || user.role === 'admin'),
     [data]

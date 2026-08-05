@@ -122,7 +122,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
       memberUnsub.current = onSnapshot(
         q.memberByUid(next.uid),
         (snap) => setMember(snap.empty ? null : withId<Member>(snap.docs[0])),
-        () => setMember(null)
+        // A denied read and a genuinely unlinked account both end up as `member = null`, and
+        // every member screen renders that as "No membership linked yet". That ambiguity hid a
+        // real outage: accounts with no role claim were failing isMember() in firestore.rules
+        // and being told they had no membership. The state stays null — there is nothing valid
+        // to show — but the cause is no longer invisible to whoever opens the console.
+        (error) => {
+          console.error(
+            '[firestore] membership listener failed — the screen will say "no membership linked", ' +
+              'but this is a permissions or connection fault, not an empty account.',
+            error
+          );
+          setMember(null);
+        }
       );
     });
 

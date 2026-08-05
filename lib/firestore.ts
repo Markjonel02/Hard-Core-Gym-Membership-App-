@@ -2,6 +2,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   limit as fbLimit,
   orderBy,
@@ -26,6 +27,7 @@ import type {
   NonMember,
   Payment,
   Plan,
+  PricingSettings,
   UserDoc,
   UsernameDoc,
 } from '@/types/models';
@@ -50,6 +52,8 @@ export const ref = {
   member: (id: string) => doc(db, 'members', id),
   nonMember: (id: string) => doc(db, 'nonMembers', id),
   plan: (id: string) => doc(db, 'plans', id),
+  /** The day-pass fee. Admin writes, any signed-in client reads. */
+  pricing: () => doc(db, 'settings', 'pricing'),
   dailyStat: (id: string) => doc(db, 'stats', 'daily', 'entries', id),
   monthlyStat: (id: string) => doc(db, 'stats', 'monthly', 'entries', id),
 };
@@ -171,6 +175,32 @@ export async function setMemberStatus(id: string, status: MemberStatus) {
   return updateMember(id, { status });
 }
 
+/**
+ * Retires a membership without destroying anything.
+ *
+ * "Delete" on the Accounts screen means this. A true delete is not available to the client and
+ * would be the wrong shape anyway: the sign-in credential lives in Firebase Auth, `deleteUser`
+ * is Admin SDK only, and removing the Firestore document alone would leave a working login
+ * pointing at nothing. Archiving also keeps the payment and attendance history that the revenue
+ * figures and the attendance log are derived from — a removed member would silently rewrite last
+ * month's totals.
+ *
+ * `status: 'cancelled'` is what stops the membership counting as active anywhere; `archived`
+ * only controls whether the row is listed. Both are set together so a cancelled-but-visible
+ * member stays possible (the existing Cancel action) while an archived one is always cancelled.
+ */
+export async function archiveMember(id: string) {
+  return updateMember(id, { archived: true, status: 'cancelled' });
+}
+
+/**
+ * Puts an archived membership back in the list. The term is *not* reinstated — `status` stays
+ * cancelled, so the desk renews it deliberately rather than a restore quietly granting access.
+ */
+export async function restoreMember(id: string) {
+  return updateMember(id, { archived: false });
+}
+
 export async function upsertUserProfile(uid: string, patch: Partial<UserDoc>) {
   return setDoc(ref.user(uid), stripUndefined(patch), { merge: true });
 }
@@ -260,6 +290,47 @@ export async function recordPayment(input: NewPaymentInput) {
   return addDoc(col.payments(), stripUndefined({ ...input, paidAt: serverTimestamp() }));
 }
 
+/**
+ * The day-pass fee charged to a walk-in at the desk or straight after their QR is scanned.
+ *
+ * Written into `payments` like any other sale, with `memberId: null` and no plan, so the monthly
+ * revenue figure is one sum over one collection rather than two sources that can disagree. The
+ * period is the single day of the visit, which keeps the shape identical to a membership payment
+ * for the CSV export and any future aggregation.
+ *
+ * Amount is a caller decision, not a lookup: `settings/pricing` supplies the default but the
+ * form leaves it editable, because comped and discounted visits are ordinary at a front desk.
+ */
+export async function recordWalkInPayment(params: {
+  nonMemberId: string;
+  visitorName: string;
+  amountCents: number;
+  method: Payment['method'];
+  recordedBy: string;
+  at?: Date;
+}) {
+  const day = params.at ?? new Date();
+  return addDoc(
+    col.payments(),
+    stripUndefined({
+      memberId: null,
+      memberName: params.visitorName,
+      // No plan was bought. Empty rather than absent so the CSV columns line up with membership
+      // rows and every reader can treat the field as present.
+      planId: '',
+      planName: 'Walk-in day pass',
+      amountCents: params.amountCents,
+      method: params.method,
+      kind: 'walkin' satisfies Payment['kind'],
+      nonMemberId: params.nonMemberId,
+      periodStart: day,
+      periodEnd: day,
+      recordedBy: params.recordedBy,
+      paidAt: serverTimestamp(),
+    })
+  );
+}
+
 /** Renewal = extend the member term and log the payment together. */
 export async function renewMembership(params: {
   memberId: string;
@@ -304,6 +375,26 @@ export async function fetchAllPayments(): Promise<Payment[]> {
   return snap.docs.map((d) => withId<Payment>(d));
 }
 
+/**
+ * The default walk-in fee, in centavos. Falls back to 0 when unset — a gym that has not priced
+ * day passes yet gets an empty amount field to fill in, not a number someone else picked.
+ */
+export const DEFAULT_WALK_IN_CENTS = 0;
+
+export async function fetchPricing(): Promise<PricingSettings> {
+  const snap = await getDoc(ref.pricing());
+  const cents = snap.exists() ? snap.get('walkInCents') : null;
+  return { walkInCents: typeof cents === 'number' ? cents : DEFAULT_WALK_IN_CENTS };
+}
+
+export async function saveWalkInPrice(walkInCents: number, updatedBy: string) {
+  return setDoc(
+    ref.pricing(),
+    { walkInCents, updatedBy, updatedAt: serverTimestamp() },
+    { merge: true }
+  );
+}
+
 export type {
   Announcement,
   CheckIn,
@@ -313,6 +404,7 @@ export type {
   NonMember,
   Payment,
   Plan,
+  PricingSettings,
   UserDoc,
   UsernameDoc,
 };

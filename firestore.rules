@@ -4,8 +4,21 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Helper: the custom claim on the Auth token is the authoritative role source.
+    //
+    // A missing claim reads as 'member', and that default is load-bearing rather than tidy.
+    // The claim is stamped by `provisionUser` in functions/src/roles.ts — a Cloud Function that
+    // has never deployed, because Functions v2 builds through Cloud Build and this project is on
+    // the Spark plan. So *every* admin-created login arrives with no claim at all, fails
+    // isMember(), and is denied the read of its own members/{id} doc. The client cannot tell
+    // that apart from having no membership: the listener's error callback in AuthContext sets
+    // `member = null` either way, so the app showed "No membership linked yet" to people who
+    // were fully paid up.
+    //
+    // Defaulting grants member-level access only. `staff` and `admin` still require a real
+    // claim, which only the Admin SDK can set, so this does not widen privilege — it stops
+    // withholding the baseline from accounts that were never given one.
     function role() {
-      return request.auth.token.role;
+      return request.auth.token.get('role', 'member');
     }
 
     function isSignedIn() {
@@ -43,12 +56,21 @@ service cloud.firestore {
     // role does each hold?", which no amount of per-doc self-reads can answer. The exposure is
     // the staff-only profile fields already visible on the members screen, and `role` stays
     // unwritable from any client — promotion still goes through the admin-gated callable.
+    //
+    // Staff also *write* here, which is what backs the Edit modal on the Accounts screen: the
+    // front desk corrects a misspelled name or a wrong phone number for someone who is not
+    // themselves. The two guards below are what make that safe to hand over — neither `role`
+    // nor `username` can be moved by any client, staff or not.
     match /users/{uid} {
       allow read: if (isSignedIn() && request.auth.uid == uid) || isStaff();
       allow create: if isSignedIn() && request.auth.uid == uid
                     && (!('role' in request.resource.data) || request.resource.data.role == 'member');
-      allow update: if isSignedIn() && request.auth.uid == uid
-                    && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+      allow update: if ((isSignedIn() && request.auth.uid == uid) || isStaff())
+                    // `.get` rather than a bare field read: profiles written before the role
+                    // mirror existed carry no `role` key, and touching a missing field errors
+                    // the rule instead of failing it.
+                    && (!('role' in request.resource.data)
+                        || request.resource.data.role == resource.data.get('role', 'member'))
                     && (!('username' in request.resource.data)
                         || !('username' in resource.data)
                         || request.resource.data.username == resource.data.username);
@@ -95,13 +117,30 @@ service cloud.firestore {
     // attached to their own member doc (the receipt list on the Membership screen).
     // Staff create payments from the front desk; nobody edits or deletes one, because the
     // sales aggregates are derived from these docs and a silent edit would skew the totals.
+    //
+    // Walk-in fees live here too, as `kind: 'walkin'` with `memberId: null`. Putting them in
+    // the same collection is what makes the revenue figure whole without special-casing: one
+    // sum over `payments` covers memberships and day passes alike, and the CSV export needs no
+    // second source. The read guard mirrors the one on `checkins` and for the same reason —
+    // `ownsMember` does a get() on members/{memberId}, so a null id would *error* rule
+    // evaluation and take a member's whole receipt list down with it, not merely hide one row.
     match /payments/{paymentId} {
-      allow read: if isAdmin() || isStaff() || ownsMember(resource.data.memberId);
+      allow read: if isAdmin() || isStaff()
+                  || (resource.data.get('kind', 'new') != 'walkin'
+                      && ownsMember(resource.data.memberId));
       allow create: if isStaff()
                     && request.resource.data.amountCents is int
                     && request.resource.data.amountCents >= 0
-                    && request.resource.data.kind in ['new', 'renewal'];
+                    && request.resource.data.kind in ['new', 'renewal', 'walkin'];
       allow update, delete: if false;
+    }
+
+    // The day-pass price, set once by an admin and read by the front desk when logging a
+    // walk-in. Signed-in read rather than staff-only: a member glancing at the price of a guest
+    // pass is not a leak, and the value is on the wall of the gym anyway.
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     // Walk-ins. Staff-only in both directions, which is the whole reason the visitor's own

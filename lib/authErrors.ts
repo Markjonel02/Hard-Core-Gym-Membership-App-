@@ -26,11 +26,40 @@ const MESSAGES: Record<string, string> = {
   // too terse or too internal to show are listed; the rest fall through to error.message below.
   'functions/internal':
     'The server could not complete that. Check that Cloud Functions are deployed, then try again.',
+  // A callable that was never deployed answers with a 404 page, which carries no
+  // Access-Control-Allow-Origin header — so the browser reports it as a CORS failure and the SDK
+  // surfaces `functions/not-found`. Naming it here stops that reading as a bug in the caller.
+  'functions/not-found':
+    'That server function is not deployed, so this cannot run in the app yet.',
   'functions/unavailable':
     'Could not reach the server. Check your connection, then try again.',
   'functions/unauthenticated': 'Please sign in again and retry.',
   'functions/deadline-exceeded': 'That took too long to finish. Try again in a moment.',
 };
+
+/**
+ * True when a callable failed because it is not deployed, rather than because it rejected the
+ * request.
+ *
+ * The distinction decides what the UI offers next. A rejection is the admin's to fix — wrong
+ * address, self-demotion, missing permission — and the server's own message says so. A missing
+ * deployment is nobody's to fix from inside the app: Cloud Functions v2 builds through Cloud
+ * Build, which needs the Blaze plan, so the screens that depend on one fall back to the
+ * equivalent terminal command instead of showing an error the admin cannot act on.
+ *
+ * `internal` is included deliberately. An undeployed callable does not fail cleanly — depending
+ * on region and browser it surfaces as not-found, as internal, or as a bare network error after
+ * the preflight is refused — so treating only `not-found` as "missing" would leave the most
+ * common symptom showing the unactionable message this exists to replace.
+ */
+export function isFunctionMissing(error: unknown): boolean {
+  if (!(error instanceof FirebaseError)) return false;
+  return (
+    error.code === 'functions/not-found' ||
+    error.code === 'functions/internal' ||
+    error.code === 'functions/unavailable'
+  );
+}
 
 export function authErrorMessage(error: unknown): string {
   if (error instanceof FirebaseError) {

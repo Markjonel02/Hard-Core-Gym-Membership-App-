@@ -36,33 +36,38 @@ export default function CheckIn() {
   // Namespaced payload so the scanner can reject arbitrary QR codes. Built through the shared
   // helper because the scanner parses member and walk-in passes with one function — the envelope
   // has to be defined in exactly one place or the two drift.
+  //
+  // This code is permanent: it encodes `member.id`, which never changes for the life of the
+  // membership. Renewing, freezing, or letting it lapse does not reissue it, so a member can
+  // screenshot it once and a printed copy at the desk stays valid.
   const payload = buildMemberPass(member.id);
 
   return (
     <Screen title="Check-in" subtitle="Show this at the front desk">
       <Card style={styles.qrCard}>
+        {/*
+          The expiry warning sits *above* the code rather than replacing it. Hiding the QR was
+          hiding the member's own identifier: the scanner already refuses an expired membership
+          (app/scan.tsx), so the only thing a blank card achieved was stopping the front desk
+          from pulling the record up to renew it — the one thing the member came in to do.
+        */}
         {isExpired ? (
           <View style={styles.expiredBlock}>
             <Text style={[styles.expiredTitle, { color: danger }]}>Membership expired</Text>
             <Text style={{ color: muted, textAlign: 'center' }}>
-              Renew at the front desk to check in again.
+              Show this code at the front desk to renew.
             </Text>
           </View>
-        ) : (
-          <>
-            <View style={[styles.qrFrame, { borderColor: border }]}>
-              <QRCode value={payload} size={220} backgroundColor="#ffffff" color="#000000" />
-            </View>
-            <Text style={[styles.name, { color: text }]}>{member.fullName}</Text>
-            <Badge
-              label={member.status}
-              tone={membershipTone(member.status, daysRemaining)}
-            />
-            <Text style={{ color: muted, fontSize: FontSize.sm, textAlign: 'center' }}>
-              {member.planName}
-            </Text>
-          </>
-        )}
+        ) : null}
+
+        <View style={[styles.qrFrame, { borderColor: border }]}>
+          <QRCode value={payload} size={220} backgroundColor="#ffffff" color="#000000" />
+        </View>
+        <Text style={[styles.name, { color: text }]}>{member.fullName}</Text>
+        <Badge label={member.status} tone={membershipTone(member.status, daysRemaining)} />
+        <Text style={{ color: muted, fontSize: FontSize.sm, textAlign: 'center' }}>
+          {member.planName}
+        </Text>
       </Card>
 
       {checkins.length ? (
@@ -96,7 +101,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   name: { fontSize: FontSize.xl, fontWeight: FontWeight.bold },
-  expiredBlock: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xxl },
+  expiredBlock: { alignItems: 'center', gap: Spacing.sm },
   expiredTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   section: { gap: Spacing.md },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
