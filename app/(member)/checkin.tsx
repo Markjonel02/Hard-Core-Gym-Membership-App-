@@ -4,16 +4,21 @@ import QRCode from 'react-native-qrcode-svg';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { Pager } from '@/components/ui/Pager';
 import { Screen } from '@/components/ui/Screen';
 import { useThemeColor } from '@/components/Themed';
 import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { useMembership, useMyCheckins } from '@/hooks/useMember';
+import { usePagination } from '@/hooks/usePagination';
 import { formatDateTime, membershipTone } from '@/lib/format';
 import { buildMemberPass } from '@/lib/nonMembers';
 
 export default function CheckIn() {
   const { member, daysRemaining, isExpired } = useMembership();
-  const { data: checkins } = useMyCheckins(5);
+  // 50, not 5: the list is paged five at a time now, so the old cap would have left the pager
+  // with exactly one page and hidden the rest of the history it exists to reach.
+  const { data: checkins } = useMyCheckins(50);
+  const visits = usePagination(checkins);
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -74,7 +79,7 @@ export default function CheckIn() {
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: text }]}>Recent visits</Text>
           <Card padded={false}>
-            {checkins.map((entry, index) => (
+            {visits.pageRows.map((entry, index) => (
               <View
                 key={entry.id}
                 style={[
@@ -85,6 +90,7 @@ export default function CheckIn() {
               </View>
             ))}
           </Card>
+          <Pager pagination={visits} label="visits" style={styles.pager} />
         </View>
       ) : null}
     </Screen>
@@ -106,4 +112,6 @@ const styles = StyleSheet.create({
   section: { gap: Spacing.md },
   sectionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   row: { paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  // The card supplies the divider above the pager, so it needs no border of its own here.
+  pager: { borderTopWidth: 0, paddingTop: 0 },
 });

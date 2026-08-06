@@ -7,12 +7,14 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { Pager } from '@/components/ui/Pager';
 import { Screen } from '@/components/ui/Screen';
 import { StatTile } from '@/components/ui/StatTile';
 import { SkeletonList } from '@/components/ui/Skeleton';
 import { useThemeColor } from '@/components/Themed';
 import { FontSize, FontWeight, Spacing } from '@/constants/Theme';
 import { useCollection } from '@/hooks/useCollection';
+import { usePagination, PAGE_SIZE } from '@/hooks/usePagination';
 import {
   useActiveMembers,
   useExpiringMembers,
@@ -44,12 +46,13 @@ export default function AdminSales() {
 
   const recentQuery = useMemo(() => q.recentPayments(), []);
   const { data: allPayments } = useCollection<Payment>(recentQuery);
-  // Sorted and capped here: the query has no orderBy so a payment recorded seconds ago,
-  // whose serverTimestamp has not resolved, still appears instead of being filtered out.
-  const recentPayments = useMemo(
-    () => sortByDateDesc(allPayments, 'paidAt').slice(0, 8),
-    [allPayments]
-  );
+  // Sorted here because the query has no orderBy, so a payment recorded seconds ago — whose
+  // serverTimestamp has not resolved — still appears instead of being filtered out. No longer
+  // capped at 8: the list is paged, and a cap would have hidden everything past the first page.
+  const recentPayments = useMemo(() => sortByDateDesc(allPayments, 'paidAt'), [allPayments]);
+
+  const payments = usePagination(recentPayments);
+  const atRisk = usePagination(expiring);
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -264,7 +267,7 @@ export default function AdminSales() {
           <EmptyState title="Nobody expiring in the next 90 days" />
         ) : (
           <View>
-            {expiring.slice(0, 6).map((member, index) => {
+            {atRisk.pageRows.map((member, index) => {
               const days = daysUntil(member.endDate);
               return (
                 <View
@@ -291,7 +294,8 @@ export default function AdminSales() {
                 </View>
               );
             })}
-            {expiring.length > 6 ? (
+            <Pager pagination={atRisk} label="members" />
+            {expiring.length > PAGE_SIZE ? (
               <Button
                 title={`View all ${expiring.length} members`}
                 variant="ghost"
@@ -309,7 +313,7 @@ export default function AdminSales() {
           <EmptyState title="No payments yet" message="Record a payment from a member's profile." />
         ) : (
           <View>
-            {recentPayments.map((payment, index) => (
+            {payments.pageRows.map((payment, index) => (
               <View
                 key={payment.id}
                 style={[
@@ -327,6 +331,7 @@ export default function AdminSales() {
                 </Text>
               </View>
             ))}
+            <Pager pagination={payments} label="payments" />
           </View>
         )}
       </Card>

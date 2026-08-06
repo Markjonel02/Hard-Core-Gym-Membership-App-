@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NonMemberPassModal } from '@/components/NonMemberPassModal';
@@ -7,13 +7,20 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/Input';
+import { Pager } from '@/components/ui/Pager';
 import { Screen } from '@/components/ui/Screen';
 import { SkeletonList } from '@/components/ui/Skeleton';
 import { useThemeColor } from '@/components/Themed';
 import { useAuth } from '@/context/AuthContext';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/Theme';
 import { useAttendance, type AttendanceRow } from '@/hooks/useAttendance';
-import { createNonMemberCheckIn, upsertNonMember } from '@/lib/firestore';
+import { usePagination, PAGE_SIZE } from '@/hooks/usePagination';
+import {
+  createNonMemberCheckIn,
+  fetchPricing,
+  recordWalkInPayment,
+  upsertNonMember,
+} from '@/lib/firestore';
 import { formatDate, initialsOf, toDate } from '@/lib/format';
 import { passDisplayName, type NonMemberPassIdentity } from '@/lib/nonMembers';
 
@@ -65,6 +72,25 @@ export default function Attendance() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [walkInOpen, setWalkInOpen] = useState(false);
+  const [walkInPesos, setWalkInPesos] = useState(0);
+
+  /**
+   * Read once rather than subscribed: the price changes about as often as the signage does, and a
+   * live listener on a settings doc would be a read per admin per session for a number the desk
+   * can override in the field anyway. A failed read leaves the default of 0, which shows as a
+   * blank fee the desk fills in — never as a silently wrong charge.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPricing()
+      .then((pricing) => {
+        if (!cancelled) setWalkInPesos(pricing.walkInCents / 100);
+      })
+      .catch((err) => console.error('[pricing] could not load walk-in price', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -82,7 +108,15 @@ export default function Attendance() {
     });
   }, [rows, search, filter]);
 
-  const groups = useMemo(() => groupByDay(filtered), [filtered]);
+  // Paged before grouping, not after: `groupByDay` buckets rows under a day heading, and slicing
+  // the grouped output would put a page break in the middle of a day. Order is filter → page →
+  // group, so every heading on screen counts only the rows actually under it.
+  //
+  // The reset key is the filter state — search for a name while sitting on page 4 and you would
+  // otherwise land on an empty page of a two-page result.
+  const visits = usePagination(filtered, PAGE_SIZE, `${filter}:${search.trim().toLowerCase()}`);
+
+  const groups = useMemo(() => groupByDay(visits.pageRows), [visits.pageRows]);
 
   const todayCount = useMemo(() => {
     const today = new Date().toDateString();
@@ -94,12 +128,33 @@ export default function Attendance() {
   }, [rows]);
 
   /**
-   * Desk-side walk-in: writes the person's record and their attendance row together, for
-   * someone standing at the counter without the app. Same path a scan takes, minus the camera.
+   * Desk-side walk-in: writes the person's record, their attendance row, and — when the visit was
+   * priced — the payment that puts them in the month's revenue. Same path a scan takes, minus the
+   * camera.
+   *
+   * The payment is written last and its failure is not allowed to undo the check-in: the person is
+   * already through the door, and losing the attendance record to a billing error would understate
+   * the room. A missed payment is a number the desk can correct; a missed check-in is not.
    */
-  const registerWalkIn = async (identity: Required<NonMemberPassIdentity>) => {
+  const registerWalkIn = async (
+    identity: Required<NonMemberPassIdentity>,
+    amountCents: number
+  ) => {
     await upsertNonMember(identity);
-    await createNonMemberCheckIn(identity.id, passDisplayName(identity), user?.uid ?? 'unknown');
+    const name = passDisplayName(identity);
+    await createNonMemberCheckIn(identity.id, name, user?.uid ?? 'unknown');
+
+    // Zero is a comp, not a payment — writing a ₱0 row would clutter Recent payments with
+    // non-events and make the walk-in count look like revenue that never arrived.
+    if (amountCents > 0) {
+      await recordWalkInPayment({
+        nonMemberId: identity.id,
+        visitorName: name,
+        amountCents,
+        method: 'cash',
+        recordedBy: user?.uid ?? 'unknown',
+      });
+    }
   };
 
   return (
@@ -176,58 +231,61 @@ export default function Attendance() {
             />
           </Card>
         ) : (
-          groups.map((group) => (
-            <View key={group.key} style={{ gap: Spacing.sm }}>
-              <Text style={[styles.dayHeading, { color: muted }]}>
-                {group.label} · {group.rows.length}
-              </Text>
-              <Card padded={false}>
-                {group.rows.map((row, index) => {
-                  const at = toDate(row.at);
-                  const isMember = row.kind === 'member';
-                  return (
-                    <View
-                      key={row.id}
-                      style={[
-                        styles.row,
-                        index > 0 && {
-                          borderTopWidth: StyleSheet.hairlineWidth,
-                          borderTopColor: border,
-                        },
-                      ]}>
+          <>
+            {groups.map((group) => (
+              <View key={group.key} style={{ gap: Spacing.sm }}>
+                <Text style={[styles.dayHeading, { color: muted }]}>
+                  {group.label} · {group.rows.length}
+                </Text>
+                <Card padded={false}>
+                  {group.rows.map((row, index) => {
+                    const at = toDate(row.at);
+                    const isMember = row.kind === 'member';
+                    return (
                       <View
+                        key={row.id}
                         style={[
-                          styles.avatar,
-                          { backgroundColor: isMember ? brandMuted : surface },
+                          styles.row,
+                          index > 0 && {
+                            borderTopWidth: StyleSheet.hairlineWidth,
+                            borderTopColor: border,
+                          },
                         ]}>
-                        <Text
-                          style={[styles.initials, { color: isMember ? brand : muted }]}>
-                          {initialsOf(row.name)}
-                        </Text>
+                        <View
+                          style={[
+                            styles.avatar,
+                            { backgroundColor: isMember ? brandMuted : surface },
+                          ]}>
+                          <Text
+                            style={[styles.initials, { color: isMember ? brand : muted }]}>
+                            {initialsOf(row.name)}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text style={[styles.name, { color: text }]} numberOfLines={1}>
+                            {row.name}
+                          </Text>
+                          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+                            {at
+                              ? at.toLocaleTimeString(undefined, {
+                                  hour: 'numeric',
+                                  minute: '2-digit',
+                                })
+                              : 'Saving…'}
+                          </Text>
+                        </View>
+                        <Badge
+                          label={isMember ? 'Member' : 'Walk-in'}
+                          tone={isMember ? 'brand' : 'neutral'}
+                        />
                       </View>
-                      <View style={{ flex: 1, gap: 2 }}>
-                        <Text style={[styles.name, { color: text }]} numberOfLines={1}>
-                          {row.name}
-                        </Text>
-                        <Text style={{ color: muted, fontSize: FontSize.sm }}>
-                          {at
-                            ? at.toLocaleTimeString(undefined, {
-                                hour: 'numeric',
-                                minute: '2-digit',
-                              })
-                            : 'Saving…'}
-                        </Text>
-                      </View>
-                      <Badge
-                        label={isMember ? 'Member' : 'Walk-in'}
-                        tone={isMember ? 'brand' : 'neutral'}
-                      />
-                    </View>
-                  );
-                })}
-              </Card>
-            </View>
-          ))
+                    );
+                  })}
+                </Card>
+              </View>
+            ))}
+            <Pager pagination={visits} label="check-ins" style={{ borderTopWidth: 0 }} />
+          </>
         )}
       </ScrollView>
 
@@ -236,6 +294,7 @@ export default function Attendance() {
         mode="desk"
         onClose={() => setWalkInOpen(false)}
         onRegister={registerWalkIn}
+        defaultFeePesos={walkInPesos}
       />
     </Screen>
   );

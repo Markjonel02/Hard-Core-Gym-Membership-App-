@@ -27,12 +27,13 @@ type FormValues = z.infer<typeof schema>;
 const initialValues: FormValues = { identifier: '', password: '' };
 
 export default function SignIn() {
-  const { signIn } = useAuth();
+  const { signIn, signOutReason, clearSignOutReason } = useAuth();
   const background = useThemeColor({}, 'background');
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
   const brand = useThemeColor({}, 'brand');
   const danger = useThemeColor({}, 'danger');
+  const warning = useThemeColor({}, 'warning');
   const [formError, setFormError] = useState<string | null>(null);
   const [passOpen, setPassOpen] = useState(false);
 
@@ -47,11 +48,25 @@ export default function SignIn() {
           <Text style={[styles.tagline, { color: muted }]}>Members area</Text>
         </View>
 
+        {/*
+          Landing here with no explanation reads as a bug or a dropped connection. Naming the
+          inactivity timeout is the difference between "it logged me out again" and a rule the
+          person at the desk can work with.
+        */}
+        {signOutReason === 'idle' ? (
+          <Card style={{ borderColor: warning, borderWidth: 1 }}>
+            <Text style={{ color: text }}>
+              You were signed out after 15 minutes of inactivity. Sign in again to continue.
+            </Text>
+          </Card>
+        ) : null}
+
         <Formik
           initialValues={initialValues}
           validate={toFormikValidate(schema)}
           onSubmit={async (values) => {
             setFormError(null);
+            clearSignOutReason();
             try {
               await signIn(values.identifier, values.password);
               router.replace('/');

@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 
 import { AuthProvider } from '@/context/AuthContext';
+import { IdleTimeout } from '@/components/IdleTimeout';
 import { useColorScheme } from '@/components/useColorScheme';
 
 export {
@@ -48,20 +49,27 @@ function RootLayoutNav() {
   return (
     <AuthProvider>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="(auth)" />
-          {/*
-            Deliberately a root route rather than part of (auth): an unverified account *is*
-            signed in, so the auth group's "signed in? leave" guard and this screen's own
-            redirect would bounce off each other every render. Sitting outside every guarded
-            group, it is reachable in exactly the one state that needs it.
-          */}
-          <Stack.Screen name="verify-email" />
-          <Stack.Screen name="(member)" />
-          <Stack.Screen name="(admin)" />
-          <Stack.Screen name="scan" options={{ presentation: 'modal', headerShown: true, title: 'Scan QR Pass' }} />
-        </Stack>
+        {/*
+          Inside AuthProvider because it needs `user` and `signOut`; outside the Stack because a
+          single timer has to span every screen — one per route would restart on navigation,
+          which is the opposite of an inactivity limit.
+        */}
+        <IdleTimeout>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" />
+            {/*
+              Deliberately a root route rather than part of (auth): an unverified account *is*
+              signed in, so the auth group's "signed in? leave" guard and this screen's own
+              redirect would bounce off each other every render. Sitting outside every guarded
+              group, it is reachable in exactly the one state that needs it.
+            */}
+            <Stack.Screen name="verify-email" />
+            <Stack.Screen name="(member)" />
+            <Stack.Screen name="(admin)" />
+            <Stack.Screen name="scan" options={{ presentation: 'modal', headerShown: true, title: 'Scan QR Pass' }} />
+          </Stack>
+        </IdleTimeout>
       </ThemeProvider>
     </AuthProvider>
   );

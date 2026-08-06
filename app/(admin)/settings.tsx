@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Platform,
@@ -19,10 +19,16 @@ import { useThemeColor } from "@/components/Themed";
 import { useAuth } from "@/context/AuthContext";
 import { FontSize, FontWeight, Radius, Spacing } from "@/constants/Theme";
 import { useAccountSearch } from "@/hooks/useUsers";
-import { authErrorMessage } from "@/lib/authErrors";
+import { authErrorMessage, isFunctionMissing } from "@/lib/authErrors";
 import { functions } from "@/lib/firebase";
+import { fetchPricing, saveWalkInPrice } from "@/lib/firestore";
 import { initialsOf } from "@/lib/format";
 import { memberDisplayName } from "@/lib/names";
+import {
+  MAKE_ADMIN_AFTER,
+  MAKE_ADMIN_HINT,
+  makeAdminCommand,
+} from "@/lib/roleFallback";
 import type { Role } from "@/types/models";
 
 export default function AdminSettings() {
@@ -42,6 +48,48 @@ export default function AdminSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The terminal command to run when the callable turns out not to be deployed. */
+  const [fallback, setFallback] = useState<string | null>(null);
+
+  /**
+   * The default day-pass fee, in pesos as typed. Prefills the amount on the walk-in modal and the
+   * post-scan card; both stay editable, so this is the usual price rather than a fixed one.
+   */
+  const [walkInFee, setWalkInFee] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPricing()
+      .then((pricing) => {
+        // Blank when unset, so the field reads as "not priced yet" instead of a deliberate ₱0.
+        if (!cancelled) setWalkInFee(pricing.walkInCents ? String(pricing.walkInCents / 100) : "");
+      })
+      .catch((err) => console.error("[pricing] could not load walk-in price", err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveWalkInFee = async () => {
+    setError(null);
+    setMessage(null);
+    setFallback(null);
+
+    const pesos = Number(walkInFee.trim() || "0");
+    if (!Number.isFinite(pesos) || pesos < 0) {
+      return setError("Enter a day-pass amount like 150.");
+    }
+
+    setBusy("pricing");
+    try {
+      await saveWalkInPrice(Math.round(pesos * 100), user?.uid ?? "unknown");
+      setMessage(`Day-pass fee saved. New walk-ins are priced at ₱${pesos}.`);
+    } catch (err) {
+      setError(authErrorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   /**
    * Type-ahead over the accounts already loaded by the listener, so it costs no extra reads.
@@ -62,19 +110,32 @@ export default function AdminSettings() {
   const assignRole = async () => {
     setError(null);
     setMessage(null);
+    setFallback(null);
     if (!email.trim()) return setError("Enter the account email.");
 
+    const address = email.trim().toLowerCase();
     setBusy("role");
     try {
       const call = httpsCallable(functions, "setRole");
-      await call({ email: email.trim().toLowerCase(), role: targetRole });
+      await call({ email: address, role: targetRole });
       setMessage(
         `${email.trim()} is now ${targetRole}. They'll see it after signing in again.`,
       );
       setEmail("");
       setPicked(null);
     } catch (err) {
-      setError(authErrorMessage(err));
+      /**
+       * `setRole` needs the Admin SDK, so it can only run as a Cloud Function — and Functions v2
+       * builds through Cloud Build, which the Spark plan does not include. The callable therefore
+       * answers 404, the browser reports the missing CORS header instead of the missing function,
+       * and the admin gets told to "check that Cloud Functions are deployed" — a fix they cannot
+       * perform. The equivalent script needs no deployment, so offer that line instead of an error.
+       */
+      if (isFunctionMissing(err)) {
+        setFallback(makeAdminCommand(address, targetRole));
+      } else {
+        setError(authErrorMessage(err));
+      }
     } finally {
       setBusy(null);
     }
@@ -231,6 +292,52 @@ export default function AdminSettings() {
             loading={busy === "role"}
             onPress={() => void assignRole()}
           />
+
+          {fallback ? (
+            <View style={{ gap: Spacing.sm }}>
+              <Text style={{ color: muted, fontSize: FontSize.sm }}>
+                {MAKE_ADMIN_HINT}
+              </Text>
+              <View
+                style={[
+                  styles.codeBlock,
+                  { backgroundColor: surface, borderColor: border },
+                ]}>
+                <Text style={[styles.code, { color: text }]} selectable>
+                  {fallback}
+                </Text>
+              </View>
+              <Text style={{ color: muted, fontSize: FontSize.sm }}>
+                {MAKE_ADMIN_AFTER}
+              </Text>
+            </View>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {role === "admin" ? (
+        <Card style={{ gap: Spacing.md }}>
+          <Text style={[styles.sectionTitle, { color: text }]}>
+            Walk-in pricing
+          </Text>
+          <Text style={{ color: muted, fontSize: FontSize.sm }}>
+            What a day pass normally costs. It prefills the amount when a
+            walk-in is logged or scanned, and the desk can still change or comp
+            it per visit. Charged visits count toward monthly revenue.
+          </Text>
+          <Input
+            label="Day-pass fee (₱)"
+            placeholder="150"
+            keyboardType="decimal-pad"
+            value={walkInFee}
+            onChangeText={setWalkInFee}
+          />
+          <Button
+            title="Save day-pass fee"
+            variant="secondary"
+            loading={busy === "pricing"}
+            onPress={() => void saveWalkInFee()}
+          />
         </Card>
       ) : null}
 
@@ -293,4 +400,14 @@ const styles = StyleSheet.create({
   suggestionEmail: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
   roleRow: { flexDirection: "row", gap: Spacing.sm },
   roleButton: { flex: 1, paddingHorizontal: Spacing.sm },
+  codeBlock: {
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  // Monospace so the command is unambiguous to read, `selectable` above so it can be copied.
+  code: {
+    fontSize: FontSize.sm,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
 });

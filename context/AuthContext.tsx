@@ -40,7 +40,10 @@ export type SignUpInput = {
   password: string;
 };
 
-type AuthState = {
+/** Why the last session ended, when it was not the user pressing Sign out. */
+export type SignOutReason = 'idle';
+
+export type AuthState = {
   user: User | null;
   profile: UserDoc | null;
   /** Read from the ID token custom claim, falling back to the users doc. */
@@ -57,7 +60,13 @@ type AuthState = {
   /** Accepts a username or an email; usernames are resolved to their email first. */
   signIn: (identifier: string, password: string) => Promise<void>;
   signUp: (input: SignUpInput) => Promise<void>;
-  signOut: () => Promise<void>;
+  /**
+   * Optional reason for an automatic sign-out, so the sign-in screen can say why the session
+   * ended instead of appearing to have logged the person out for no reason.
+   */
+  signOut: (reason?: SignOutReason) => Promise<void>;
+  signOutReason: SignOutReason | null;
+  clearSignOutReason: () => void;
   resetPassword: (email: string) => Promise<void>;
   refreshRole: () => Promise<void>;
   /** Re-fetches the user from Firebase; returns true once the address is confirmed. */
@@ -74,6 +83,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [member, setMember] = useState<Member | null>(null);
   const [loading, setLoading] = useState(true);
   const [emailVerified, setEmailVerified] = useState(false);
+  const [signOutReason, setSignOutReason] = useState<SignOutReason | null>(null);
 
   // Cleanup handles for the per-user Firestore listeners.
   const profileUnsub = useRef<(() => void) | null>(null);
@@ -293,11 +303,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
-  const signOut = useCallback(async () => {
-    detach();
-    await fbSignOut(auth);
-    console.log('[auth] signed out');
-  }, [detach]);
+  const signOut = useCallback(
+    async (reason?: SignOutReason) => {
+      detach();
+      // Set before the Firebase call, not after: `fbSignOut` flips onAuthStateChanged
+      // synchronously enough that the sign-in screen can mount first, and a reason arriving
+      // after that mount would show the notice a frame late or not at all.
+      setSignOutReason(reason ?? null);
+      await fbSignOut(auth);
+      console.log(`[auth] signed out${reason ? ` (${reason})` : ''}`);
+    },
+    [detach]
+  );
+
+  const clearSignOutReason = useCallback(() => setSignOutReason(null), []);
 
   const resetPassword = useCallback(async (email: string) => {
     logAuthAttempt('password-reset', email);
@@ -345,6 +364,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
       signIn,
       signUp,
       signOut,
+      signOutReason,
+      clearSignOutReason,
       resetPassword,
       refreshRole,
       reloadUser,
@@ -360,6 +381,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
       signIn,
       signUp,
       signOut,
+      signOutReason,
+      clearSignOutReason,
       resetPassword,
       refreshRole,
       reloadUser,
