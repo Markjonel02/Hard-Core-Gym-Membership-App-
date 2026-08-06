@@ -200,6 +200,52 @@ export interface Announcement {
   createdBy: string;
 }
 
+export type SecurityLogType = 'login' | 'logout' | 'action' | 'scan';
+
+/** Why a session ended. 'manual' is the person pressing Sign out; 'idle' is the timeout. */
+export type SessionEndReason = 'manual' | 'idle';
+
+/** One entry in a session's screen trail. */
+export interface ScreenVisit {
+  /**
+   * Epoch milliseconds, not a Timestamp. Firestore rejects `serverTimestamp()` nested inside an
+   * array, and these are client clock times by nature — the whole trail is buffered on the device
+   * and written in one go when the session ends.
+   */
+  at: number;
+  name: string;
+}
+
+/**
+ * The audit trail: who signed in, what they opened, what they changed, and when they left.
+ *
+ * Append-only by rule (`allow update, delete: if false`), which is the property the whole
+ * collection rests on. A session is *two* immutable rows — a `login` written the moment auth
+ * resolves and a `logout` carrying the buffered `screens` — rather than one row updated on the
+ * way out, because any rule letting an owner update their own log would let them erase it.
+ *
+ * Written by the client under its own uid, so it is self-reported: gaps and forgeries are
+ * evident, not impossible. Server-authored logs would need Cloud Functions, which have never
+ * deployed on this project.
+ */
+export interface SecurityLog {
+  id: string;
+  type: SecurityLogType;
+  uid: string;
+  /** Display name or username, denormalised so the log reads without a join per row. */
+  who: string;
+  role: Role | null;
+  at: Timestamp;
+  /** Logout only. */
+  reason?: SessionEndReason;
+  /** Logout only — the screens visited during the session that just ended. */
+  screens?: ScreenVisit[];
+  /** Action and scan rows: a stable machine key, e.g. `payment.record`, `member.archive`. */
+  action?: string;
+  /** Human-readable target, e.g. "Mark Cruz · ₱800". */
+  detail?: string;
+}
+
 /**
  * `settings/pricing` — the default day-pass fee, in centavos.
  *

@@ -28,6 +28,7 @@ import { composeFullName, normalizeNameParts } from '@/lib/names';
 import { normalizePhone } from '@/lib/phone';
 import { canonicalizeUsername, isUsernameAvailable, reserveUsername, resolveSignInEmail, UsernameTakenError } from '@/lib/username';
 import { q, ref, withId } from '@/lib/firestore';
+import { logLogin, logLogout, setLogActor } from '@/lib/securityLog';
 import type { Member, Role, UserDoc } from '@/types/models';
 
 export type SignUpInput = {
@@ -107,23 +108,41 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setMember(null);
         setClaimRole(null);
         setLoading(false);
+        // Ordinarily `signOut` has already cleared this. This covers the paths that bypass it —
+        // a revoked or expired credential — so no later write is attributed to a session that
+        // has already ended.
+        setLogActor(null, null);
         return;
       }
 
       // The onUserCreate function writes users/{uid} and sets the claim, but the client may
       // arrive first on a brand-new signup. Read the claim, then listen for the doc to land.
+      let resolvedRole: Role | null = null;
       try {
         const token = await next.getIdTokenResult();
         const role = token.claims.role;
-        if (role === 'member' || role === 'staff' || role === 'admin') setClaimRole(role);
+        if (role === 'member' || role === 'staff' || role === 'admin') {
+          resolvedRole = role;
+          setClaimRole(role);
+        }
       } catch {
         setClaimRole(null);
       }
 
+      // Opens the audit trail for this session. Fired here rather than inside `signIn` so a
+      // session restored from persistence — the front desk reopening the browser — is recorded
+      // too; `logLogin` is idempotent per uid, so a token refresh does not write a second row.
+      void logLogin(next, resolvedRole);
+
       profileUnsub.current = onSnapshot(
         ref.user(next.uid),
         (snap) => {
-          setProfile(snap.exists() ? ({ ...snap.data(), uid: snap.id } as UserDoc) : null);
+          const doc = snap.exists() ? ({ ...snap.data(), uid: snap.id } as UserDoc) : null;
+          setProfile(doc);
+          // The login row is already written by now, carrying whatever name Auth had. This
+          // refreshes the actor so later action rows in the same session are attributed with the
+          // profile's display name rather than a bare email.
+          setLogActor(next, resolvedRole ?? doc?.role ?? null, doc?.displayName);
           setLoading(false);
         },
         () => setLoading(false)
@@ -306,6 +325,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signOut = useCallback(
     async (reason?: SignOutReason) => {
       detach();
+      // Closes the audit trail *before* the credential goes away: the create rule on
+      // securityLogs requires isSignedIn(), so this same write one line later would be denied.
+      // It carries the screens buffered during the session, and it fails open — a logging
+      // problem must not strand someone in a session they asked to leave.
+      await logLogout(reason ?? 'manual');
       // Set before the Firebase call, not after: `fbSignOut` flips onAuthStateChanged
       // synchronously enough that the sign-in screen can mount first, and a reason arriving
       // after that mount would show the notice a frame late or not at all.

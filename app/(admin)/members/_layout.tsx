@@ -1,12 +1,14 @@
 import { Stack } from 'expo-router';
 
 import { OverflowMenu } from '@/components/ui/OverflowMenu';
+import { useAuth } from '@/context/AuthContext';
 import { useColorScheme } from '@/components/useColorScheme';
-import { ADMIN_MENU_ITEMS } from '@/constants/AdminMenu';
+import { adminMenuItems } from '@/constants/AdminMenu';
 import Colors from '@/constants/Colors';
 
 export default function MembersLayout() {
   const colorScheme = useColorScheme();
+  const { role } = useAuth();
 
   return (
     <Stack
@@ -22,7 +24,7 @@ export default function MembersLayout() {
         name="index"
         options={{
           title: 'Members',
-          headerRight: () => <OverflowMenu items={ADMIN_MENU_ITEMS} />,
+          headerRight: () => <OverflowMenu items={adminMenuItems(role)} />,
         }}
       />
       <Stack.Screen name="new" options={{ title: 'New member' }} />

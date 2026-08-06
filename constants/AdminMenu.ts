@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 
 import type { OverflowMenuItem } from '@/components/ui/OverflowMenu';
+import type { Role } from '@/types/models';
 
 /**
  * The admin destinations that live in the header ⋮ menu rather than the tab bar.
@@ -12,7 +13,7 @@ import type { OverflowMenuItem } from '@/components/ui/OverflowMenu';
  * Kept in its own module, not in `app/(admin)/_layout.tsx`, so the nested members Stack can
  * show the same menu without importing a route file.
  */
-export const ADMIN_MENU_ITEMS: OverflowMenuItem[] = [
+const SHARED_ITEMS: OverflowMenuItem[] = [
   {
     label: 'Plans',
     icon: { ios: 'tag.fill', android: 'sell', web: 'sell' },
@@ -44,3 +45,22 @@ export const ADMIN_MENU_ITEMS: OverflowMenuItem[] = [
     onPress: () => router.push('/(admin)/settings'),
   },
 ];
+
+/** Admins only. Staff can see the gym's data; who looked at it is the owner's business. */
+const SECURITY_LOGS: OverflowMenuItem = {
+  label: 'Security logs',
+  icon: { ios: 'lock.doc.fill', android: 'policy', web: 'policy' },
+  hint: 'Sign-ins, screens opened, and changes',
+  onPress: () => router.push('/(admin)/securityLogs'),
+};
+
+/**
+ * The menu for a given role.
+ *
+ * A function rather than the constant this used to be, because one entry is admin-only. Hiding it
+ * from staff is presentation only — `firestore.rules` denies the read outright, so a staff account
+ * that reached the route by typing it would find an empty screen with a permissions notice.
+ */
+export function adminMenuItems(role: Role | null): OverflowMenuItem[] {
+  return role === 'admin' ? [...SHARED_ITEMS, SECURITY_LOGS] : SHARED_ITEMS;
+}

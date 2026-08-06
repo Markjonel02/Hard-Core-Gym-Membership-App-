@@ -6,7 +6,7 @@ import { OverflowMenu } from '@/components/ui/OverflowMenu';
 import { useAuth } from '@/context/AuthContext';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useColorScheme } from '@/components/useColorScheme';
-import { ADMIN_MENU_ITEMS } from '@/constants/AdminMenu';
+import { adminMenuItems } from '@/constants/AdminMenu';
 import Colors from '@/constants/Colors';
 
 /**
@@ -15,7 +15,7 @@ import Colors from '@/constants/Colors';
  */
 export default function AdminLayout() {
   const colorScheme = useColorScheme();
-  const { user, isStaff, loading, emailVerified } = useAuth();
+  const { user, isStaff, loading, emailVerified, role } = useAuth();
   // Hoisted above the guards on purpose: the web build of this hook uses useState/useEffect, so
   // calling it inside `screenOptions` below made its hook appear only on renders that got past
   // the redirects — which React reports as a changed hook order.
@@ -38,7 +38,7 @@ export default function AdminLayout() {
         headerStyle: { backgroundColor: Colors[colorScheme].card },
         headerTintColor: Colors[colorScheme].text,
         headerShown,
-        headerRight: () => <OverflowMenu items={ADMIN_MENU_ITEMS} />,
+        headerRight: () => <OverflowMenu items={adminMenuItems(role)} />,
       }}>
       <Tabs.Screen
         name="index"
@@ -90,6 +90,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="plans" options={{ title: 'Plans', href: null }} />
       <Tabs.Screen name="users" options={{ title: 'Accounts', href: null }} />
       <Tabs.Screen name="attendance" options={{ title: 'Attendance', href: null }} />
+      <Tabs.Screen name="securityLogs" options={{ title: 'Security logs', href: null }} />
     </Tabs>
   );
 }

@@ -167,6 +167,31 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // The audit trail. Admins read it; everyone signed in appends to it; nobody edits it.
+    //
+    // `update, delete: if false` is the line the whole collection rests on. The natural way to
+    // record "one session" would be a login doc updated on the way out with the screens visited,
+    // but any rule permitting that update — even scoped to the owner — lets a member rewrite or
+    // blank their own trail, which is precisely what a log exists to prevent. So a session is two
+    // immutable rows instead: a `login` written when auth resolves, and a `logout` carrying the
+    // buffered screen list. An abrupt tab close loses only the second one, and a login with no
+    // matching logout reads as exactly that on the admin screen.
+    //
+    // The uid guard stops one account writing rows in another's name. Combined with immutability
+    // that makes the trail tamper-*evident*, not tamper-proof: the rows are still self-reported by
+    // the client. Server-authored logs would need Cloud Functions, which have never deployed here.
+    //
+    // Failed sign-ins are deliberately absent. Recording them means a write from a caller with no
+    // credential, and `allow create: if true` on an append-only collection anyone can discover is
+    // a worse trade than losing them — same reasoning as `nonMembers` above. They stay in the
+    // console via logAuthError.
+    match /securityLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn()
+                    && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
     // Stats: admin-only reads for the dashboard. Only triggers write these.
     match /stats/daily/entries/{entryId} {
       allow read: if isAdmin();

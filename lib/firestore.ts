@@ -17,6 +17,7 @@ import {
 
 import { db } from '@/lib/firebase';
 import { composeFullName, normalizeNameParts } from '@/lib/names';
+import { logAction, logScan } from '@/lib/securityLog';
 import type {
   Announcement,
   CheckIn,
@@ -28,6 +29,7 @@ import type {
   Payment,
   Plan,
   PricingSettings,
+  SecurityLog,
   UserDoc,
   UsernameDoc,
 } from '@/types/models';
@@ -40,6 +42,7 @@ export const col = {
   plans: () => collection(db, 'plans'),
   payments: () => collection(db, 'payments'),
   checkins: () => collection(db, 'checkins'),
+  securityLogs: () => collection(db, 'securityLogs'),
   announcements: () => collection(db, 'announcements'),
   dailyStats: () => collection(db, 'stats', 'daily', 'entries'),
   monthlyStats: () => collection(db, 'stats', 'monthly', 'entries'),
@@ -115,6 +118,16 @@ export const q = {
 
   checkinsSince: (since: Date) => query(col.checkins(), where('at', '>=', since)),
 
+  /**
+   * The audit trail, bounded to a window. Admin-only by rule.
+   *
+   * A single-field inequality, which Firestore indexes automatically — no composite index and
+   * therefore none of the "listener silently renders empty" failure described above. The bound
+   * is also the only thing keeping this read finite: the collection grows with every session and
+   * has no TTL (Firestore TTL is not on the Spark plan).
+   */
+  securityLogsSince: (since: Date) => query(col.securityLogs(), where('at', '>=', since)),
+
   activeAnnouncements: () => query(col.announcements(), where('active', '==', true)),
 
   /** Trailing window for the revenue chart; ids are YYYY-MM so lexical order is chronological. */
@@ -141,6 +154,29 @@ function stripUndefined<T extends Record<string, unknown>>(data: T): T {
   return Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)) as T;
 }
 
+/**
+ * Records a write in the security log, without making the caller wait for it.
+ *
+ * Fire-and-forget on purpose. The audit row is secondary to the write it describes: a member
+ * should not fail to save because the log could not be written, and the front desk should not
+ * wait on a second round-trip to see the payment register. `logAction` swallows its own errors.
+ *
+ * Placed after the primary write in every caller, so a rejected write logs nothing rather than
+ * claiming something happened that did not.
+ */
+function audit(action: string, detail?: string): void {
+  void logAction(action, detail);
+}
+
+/**
+ * Peso amounts for audit detail strings. Local rather than `formatCurrency` from lib/format.ts,
+ * which reaches into the components layer for a Badge type — the data layer should not depend on
+ * the UI to describe a number.
+ */
+function formatPesos(cents: number): string {
+  return `₱${(cents / 100).toFixed(2)}`;
+}
+
 export type NewMemberInput = Pick<
   Member,
   'firstName' | 'lastName' | 'email' | 'phone' | 'planId' | 'planName'
@@ -152,27 +188,42 @@ export type NewMemberInput = Pick<
 
 export async function createMember(input: NewMemberInput) {
   const name = normalizeNameParts(input);
-  return addDoc(
+  const fullName = composeFullName(name);
+  const created = await addDoc(
     col.members(),
     stripUndefined({
       ...input,
       ...name,
       // Composed once on write so `orderBy('fullName')` and the search box keep working.
-      fullName: composeFullName(name),
+      fullName,
       uid: input.uid ?? null,
       status: 'active' satisfies MemberStatus,
       joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     })
   );
+  audit('member.create', fullName);
+  return created;
 }
 
-export async function updateMember(id: string, patch: Partial<Member>) {
+/**
+ * The unlogged primitive. Everything below that has a name for what it is doing writes its own
+ * audit row through the wrapper, so archiving does not also show up as a bare "edited member".
+ */
+function patchMember(id: string, patch: Partial<Member>) {
   return updateDoc(ref.member(id), stripUndefined({ ...patch, updatedAt: serverTimestamp() }));
 }
 
+export async function updateMember(id: string, patch: Partial<Member>) {
+  const result = await patchMember(id, patch);
+  audit('member.update', patch.fullName ?? id);
+  return result;
+}
+
 export async function setMemberStatus(id: string, status: MemberStatus) {
-  return updateMember(id, { status });
+  const result = await patchMember(id, { status });
+  audit('member.status', `${id} → ${status}`);
+  return result;
 }
 
 /**
@@ -190,7 +241,9 @@ export async function setMemberStatus(id: string, status: MemberStatus) {
  * member stays possible (the existing Cancel action) while an archived one is always cancelled.
  */
 export async function archiveMember(id: string) {
-  return updateMember(id, { archived: true, status: 'cancelled' });
+  const result = await patchMember(id, { archived: true, status: 'cancelled' });
+  audit('member.archive', id);
+  return result;
 }
 
 /**
@@ -198,15 +251,19 @@ export async function archiveMember(id: string) {
  * cancelled, so the desk renews it deliberately rather than a restore quietly granting access.
  */
 export async function restoreMember(id: string) {
-  return updateMember(id, { archived: false });
+  const result = await patchMember(id, { archived: false });
+  audit('member.restore', id);
+  return result;
 }
 
 export async function upsertUserProfile(uid: string, patch: Partial<UserDoc>) {
-  return setDoc(ref.user(uid), stripUndefined(patch), { merge: true });
+  const result = await setDoc(ref.user(uid), stripUndefined(patch), { merge: true });
+  audit('account.update', patch.displayName ?? patch.email ?? uid);
+  return result;
 }
 
 export async function createCheckIn(memberId: string, memberName: string, recordedBy: string) {
-  return addDoc(col.checkins(), {
+  const created = await addDoc(col.checkins(), {
     kind: 'member' satisfies CheckIn['kind'],
     memberId,
     // Stamped explicitly rather than left absent: the attendance screen discriminates on `kind`,
@@ -216,6 +273,10 @@ export async function createCheckIn(memberId: string, memberName: string, record
     recordedBy,
     at: serverTimestamp(),
   });
+  // Logged here rather than in app/scan.tsx so the camera and the uploaded-image path are both
+  // covered by construction — a member check-in can only reach this function through a QR.
+  void logScan('checkin.member', memberName);
+  return created;
 }
 
 export type NonMemberInput = Pick<NonMember, 'id' | 'firstName' | 'lastName'> &
@@ -260,7 +321,7 @@ export async function createNonMemberCheckIn(
   memberName: string,
   recordedBy: string
 ) {
-  return addDoc(col.checkins(), {
+  const created = await addDoc(col.checkins(), {
     kind: 'nonmember' satisfies CheckIn['kind'],
     memberId: null,
     nonMemberId,
@@ -268,6 +329,10 @@ export async function createNonMemberCheckIn(
     recordedBy,
     at: serverTimestamp(),
   });
+  // Both the scanner and the desk's walk-in form arrive here. The log records that someone was
+  // admitted and by whom, which is the same fact either way.
+  void logScan('checkin.walkin', memberName);
+  return created;
 }
 
 export type NewPaymentInput = Pick<
@@ -287,7 +352,15 @@ export type NewPaymentInput = Pick<
  * the stats/daily and stats/monthly counters from this doc.
  */
 export async function recordPayment(input: NewPaymentInput) {
-  return addDoc(col.payments(), stripUndefined({ ...input, paidAt: serverTimestamp() }));
+  const created = await addDoc(
+    col.payments(),
+    stripUndefined({ ...input, paidAt: serverTimestamp() })
+  );
+  audit(
+    'payment.record',
+    `${input.memberName} · ${input.planName} · ${formatPesos(input.amountCents)}`
+  );
+  return created;
 }
 
 /**
@@ -310,7 +383,7 @@ export async function recordWalkInPayment(params: {
   at?: Date;
 }) {
   const day = params.at ?? new Date();
-  return addDoc(
+  const created = await addDoc(
     col.payments(),
     stripUndefined({
       memberId: null,
@@ -329,6 +402,8 @@ export async function recordWalkInPayment(params: {
       paidAt: serverTimestamp(),
     })
   );
+  audit('payment.walkin', `${params.visitorName} · ${formatPesos(params.amountCents)}`);
+  return created;
 }
 
 /** Renewal = extend the member term and log the payment together. */
@@ -343,12 +418,15 @@ export async function renewMembership(params: {
   end: Date;
   recordedBy: string;
 }) {
-  await updateMember(params.memberId, {
+  // patchMember, not updateMember: the renewal is one event, and logging it as an anonymous
+  // "member edited" alongside the payment row would describe the same action twice.
+  await patchMember(params.memberId, {
     planId: params.planId,
     planName: params.planName,
     endDate: params.end as unknown as Member['endDate'],
     status: 'active',
   });
+  audit('membership.renew', `${params.memberName} · ${params.planName}`);
   return recordPayment({
     memberId: params.memberId,
     memberName: params.memberName,
@@ -365,8 +443,17 @@ export async function renewMembership(params: {
 
 export async function savePlan(plan: Omit<Plan, 'id' | 'createdAt'> & { id?: string }) {
   const { id, ...data } = plan;
-  if (id) return setDoc(ref.plan(id), stripUndefined(data), { merge: true });
-  return addDoc(col.plans(), stripUndefined({ ...data, createdAt: serverTimestamp() }));
+  if (id) {
+    const result = await setDoc(ref.plan(id), stripUndefined(data), { merge: true });
+    audit('plan.update', `${data.name} · ${formatPesos(data.priceCents)}`);
+    return result;
+  }
+  const created = await addDoc(
+    col.plans(),
+    stripUndefined({ ...data, createdAt: serverTimestamp() })
+  );
+  audit('plan.create', `${data.name} · ${formatPesos(data.priceCents)}`);
+  return created;
 }
 
 /** One-shot fetch used by the CSV export, which doesn't need a live listener. */
@@ -388,11 +475,13 @@ export async function fetchPricing(): Promise<PricingSettings> {
 }
 
 export async function saveWalkInPrice(walkInCents: number, updatedBy: string) {
-  return setDoc(
+  const result = await setDoc(
     ref.pricing(),
     { walkInCents, updatedBy, updatedAt: serverTimestamp() },
     { merge: true }
   );
+  audit('pricing.walkin', formatPesos(walkInCents));
+  return result;
 }
 
 export type {
@@ -405,6 +494,7 @@ export type {
   Payment,
   Plan,
   PricingSettings,
+  SecurityLog,
   UserDoc,
   UsernameDoc,
 };

@@ -1,5 +1,6 @@
 import { fetchAllPayments } from '@/lib/firestore';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatDateTime } from '@/lib/format';
+import type { SecurityLog } from '@/types/models';
 
 /** Quote every field and double internal quotes so names with commas survive Excel. */
 function escapeCell(value: unknown): string {
@@ -9,6 +10,24 @@ function escapeCell(value: unknown): string {
 
 export function toCsv(rows: (string | number)[][]): string {
   return rows.map((row) => row.map(escapeCell).join(',')).join('\r\n');
+}
+
+/**
+ * Hands a CSV string to the browser as a file.
+ *
+ * The BOM is not optional: without it Excel reads the bytes as its local codepage and every ₱
+ * in an amount or a log detail arrives as mojibake.
+ */
+function downloadCsv(rows: (string | number)[][], filename: string) {
+  const blob = new Blob(['﻿' + toCsv(rows)], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -32,14 +51,46 @@ export async function exportPaymentsCsv() {
     ]),
   ];
 
-  // BOM so Excel detects UTF-8 and renders the ₱ sign correctly.
-  const blob = new Blob(['﻿' + toCsv(rows)], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `hardcore-gym-payments-${formatDate(new Date(), 'yyyy-MM-dd')}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  downloadCsv(rows, `hardcore-gym-payments-${formatDate(new Date(), 'yyyy-MM-dd')}.csv`);
+}
+
+/** The columns of a security-log report, in order. Shared so CSV and PDF cannot drift apart. */
+export const SECURITY_LOG_HEADERS = [
+  'When',
+  'Type',
+  'Who',
+  'Role',
+  'Action',
+  'Detail',
+  'Reason',
+  'Screens',
+];
+
+/**
+ * Flattens log documents into report rows.
+ *
+ * The screen trail becomes `Home > Membership > Check-in` — a spreadsheet cell cannot hold an
+ * array, and the order is the only thing about it that carries meaning. Timestamps inside the
+ * trail are dropped here on purpose: the row already carries when the session ended, and eight
+ * columns of times inside one cell is not something anyone reads.
+ */
+export function securityLogRows(logs: SecurityLog[]): string[][] {
+  return logs.map((log) => [
+    formatDateTime(log.at),
+    log.type,
+    log.who ?? '',
+    log.role ?? '',
+    log.action ?? '',
+    log.detail ?? '',
+    log.reason ?? '',
+    (log.screens ?? []).map((s) => s.name).join(' > '),
+  ]);
+}
+
+/** Web-only, and exports the rows the admin is looking at — the filters are the report. */
+export function exportSecurityLogsCsv(logs: SecurityLog[]) {
+  downloadCsv(
+    [SECURITY_LOG_HEADERS, ...securityLogRows(logs)],
+    `hardcore-gym-security-logs-${formatDate(new Date(), 'yyyy-MM-dd')}.csv`
+  );
 }

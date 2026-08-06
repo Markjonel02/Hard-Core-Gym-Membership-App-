@@ -7,6 +7,7 @@ import 'react-native-reanimated';
 import { AuthProvider } from '@/context/AuthContext';
 import { IdleTimeout } from '@/components/IdleTimeout';
 import { useColorScheme } from '@/components/useColorScheme';
+import { useScreenLog } from '@/hooks/useScreenLog';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -45,6 +46,11 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
+
+  // One observer for the whole app, same reasoning as the idle timer below. It only buffers —
+  // the trail is written as a single document when the session ends — and it is inert until
+  // someone is signed in, because `recordScreen` ignores calls with no actor.
+  useScreenLog();
 
   return (
     <AuthProvider>
